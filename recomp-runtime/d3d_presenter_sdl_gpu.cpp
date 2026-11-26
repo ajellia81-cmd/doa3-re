@@ -11,6 +11,9 @@
 #include <SDL3/SDL.h>
 
 #ifdef RECOMP_IOS_LIFECYCLE
+#include <objc/message.h>
+#include <objc/runtime.h>
+
 extern "C" void recomp_audio_output_set_suspended(bool suspended);
 extern "C" bool recomp_ios_frontend_frame(void);
 #endif
@@ -604,6 +607,43 @@ uint32_t virtualKey(SDL_Scancode code)
     }
 }
 
+#ifdef RECOMP_IOS_LIFECYCLE
+void setSuspended(RecompD3dPresenter *presenter, bool suspended)
+{
+    if (presenter->suspended == suspended) return;
+    presenter->suspended = suspended;
+    if (suspended) {
+        recomp_input_keyboard_reset();
+        recomp_ios_touch_reset();
+    }
+    recomp_audio_output_set_suspended(suspended);
+}
+
+void syncUIKitActivity(RecompD3dPresenter *presenter)
+{
+    // Read UIKit directly as well as consuming SDL events. An app container
+    // can host SDL without forwarding every UIApplicationDelegate callback.
+    const auto objectMessage = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend);
+    const auto integerMessage = reinterpret_cast<intptr_t (*)(id, SEL)>(objc_msgSend);
+    auto window = reinterpret_cast<id>(SDL_GetPointerProperty(
+        SDL_GetWindowProperties(presenter->window), SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr));
+    id scene = window ? objectMessage(window, sel_registerName("windowScene")) : nullptr;
+    Class applicationClass = objc_getClass("UIApplication");
+    id application = applicationClass
+        ? objectMessage(reinterpret_cast<id>(applicationClass), sel_registerName("sharedApplication"))
+        : nullptr;
+    constexpr intptr_t foregroundActive = 0; // UISceneActivationStateForegroundActive
+    constexpr intptr_t appActive = 0; // UIApplicationStateActive
+    if (scene || application) {
+        const bool scenePaused = scene &&
+            integerMessage(scene, sel_registerName("activationState")) != foregroundActive;
+        const bool appPaused = application &&
+            integerMessage(application, sel_registerName("applicationState")) != appActive;
+        setSuspended(presenter, scenePaused || appPaused);
+    }
+}
+#endif
+
 void pumpEvents(RecompD3dPresenter *presenter)
 {
     SDL_PumpEvents();
@@ -615,19 +655,11 @@ void pumpEvents(RecompD3dPresenter *presenter)
 #ifdef RECOMP_IOS_LIFECYCLE
         if (event.type == SDL_EVENT_WILL_ENTER_BACKGROUND ||
             event.type == SDL_EVENT_DID_ENTER_BACKGROUND) {
-            if (!presenter->suspended) {
-                presenter->suspended = true;
-                recomp_input_keyboard_reset();
-                recomp_ios_touch_reset();
-                recomp_audio_output_set_suspended(true);
-            }
+            setSuspended(presenter, true);
             continue;
         }
         if (event.type == SDL_EVENT_DID_ENTER_FOREGROUND) {
-            if (presenter->suspended) {
-                presenter->suspended = false;
-                recomp_audio_output_set_suspended(false);
-            }
+            setSuspended(presenter, false);
             continue;
         }
         if (event.type == SDL_EVENT_TERMINATING) {
@@ -668,6 +700,9 @@ void pumpEvents(RecompD3dPresenter *presenter)
             }
         }
     }
+#ifdef RECOMP_IOS_LIFECYCLE
+    syncUIKitActivity(presenter);
+#endif
 }
 
 void reportPerformance(RecompD3dPresenter *presenter)
@@ -3168,6 +3203,12 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     }
 
     float scale = 1.0f;
+#ifdef RECOMP_IOS_LIFECYCLE
+    constexpr float phoneHeightPixels = 1320.0f;
+    if (config->height != 0u) {
+        scale = std::clamp(phoneHeightPixels / config->height, 1.0f, 8.0f);
+    }
+#endif
     if (const char *scale_env = std::getenv("RECOMP_D3D_SCALE")) {
         const float val = static_cast<float>(std::atof(scale_env));
         if (std::isfinite(val) && val >= 1.0f) {
@@ -3218,6 +3259,9 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     fullscreen = fullscreen || scale != 1.0f;
 #endif
     SDL_WindowFlags win_flags = SDL_WINDOW_RESIZABLE;
+#ifdef RECOMP_IOS_LIFECYCLE
+    win_flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
+#endif
     if (headless) {
         win_flags |= SDL_WINDOW_HIDDEN;
     } else if (fullscreen) {
