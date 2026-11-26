@@ -27,7 +27,7 @@ jobs:
         run: cmake --build build/ios --parallel 3 --target recomp_runtime_test recomp_d3d_presenter_sdl_gpu_test
 
   ios-ipa:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 45
     steps:
       - id: input
