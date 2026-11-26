@@ -44,6 +44,7 @@
     "docs/signpath-artifact-configuration.xml",
     "docs/test-release.md",
     "private/README.md",
+    "recomp-runtime/ios-Info.plist.in",
     "recomp-runtime/**",
     "third_party/smaa",
     "tools/build_game.py",
