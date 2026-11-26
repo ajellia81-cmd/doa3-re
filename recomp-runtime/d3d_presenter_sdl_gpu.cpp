@@ -628,7 +628,7 @@ void syncUIKitActivity(RecompD3dPresenter *presenter)
     auto window = reinterpret_cast<id>(SDL_GetPointerProperty(
         SDL_GetWindowProperties(presenter->window), SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr));
     id scene = window ? objectMessage(window, sel_registerName("windowScene")) : nullptr;
-    Class applicationClass = objc_getClass("UIApplication");
+    auto applicationClass = objc_getClass("UIApplication");
     id application = applicationClass
         ? objectMessage(reinterpret_cast<id>(applicationClass), sel_registerName("sharedApplication"))
         : nullptr;
@@ -3658,7 +3658,12 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 blit.source.w = source_w;
 #ifdef RECOMP_IOS_LIFECYCLE
                 if (frontend && presenter->widescreen) {
-                    blit.source.w = (std::min)(source_w, (source_h * 16u + 4u) / 9u);
+                    // The guest texture can be anamorphic at 1x. Crop against
+                    // the logical display aspect so 16:9 preserves proportions.
+                    const double fraction = (16.0 * presenter->aspect_h) /
+                                            (9.0 * presenter->aspect_w);
+                    blit.source.w = std::clamp(
+                        static_cast<uint32_t>(source_w * fraction + 0.5), 1u, source_w);
                     blit.source.x = (source_w - blit.source.w) / 2u;
                 }
 #endif
