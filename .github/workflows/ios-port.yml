@@ -7,7 +7,7 @@ permissions:
   contents: read
 concurrency:
   group: doa3-ios-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   ios-runtime:
     runs-on: macos-15
@@ -110,6 +110,50 @@ jobs:
           fi
           app=build/ios-device/DOA3.app
           test -x "$app/DOA3"
+          icon_work="$RUNNER_TEMP/doa3-icon"
+          mkdir -p "$icon_work/Assets.xcassets/AppIcon.appiconset"
+          curl --fail --location --silent --show-error \
+            https://github.com/NoRain211/doa3-re/releases/download/v0.8.1/DOA3-0.8.1-macOS.tar.gz \
+            -o "$icon_work/upstream.tar.gz"
+          echo "e45eef205bd9956b664fe2f324d1f01fdc40cdb6c09464e504d5fc8c1d72e3cd  $icon_work/upstream.tar.gz" \
+            | shasum -a 256 -c -
+          python3 - "$icon_work" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          import tarfile
+
+          work = Path(sys.argv[1])
+          with tarfile.open(work / "upstream.tar.gz") as archive:
+              icons = [m for m in archive.getmembers()
+                       if m.isfile() and m.name.endswith("/private/launcher-icon.png")]
+              if len(icons) != 1:
+                  raise SystemExit("Expected one original launcher icon in the upstream release.")
+              with archive.extractfile(icons[0]) as icon:
+                  (work / "original.png").write_bytes(icon.read())
+          catalog = work / "Assets.xcassets"
+          (catalog / "Contents.json").write_text(json.dumps({"info": {"version": 1, "author": "xcode"}}))
+          (catalog / "AppIcon.appiconset" / "Contents.json").write_text(json.dumps({
+              "images": [{"filename": "AppIcon.png", "idiom": "universal", "platform": "ios", "size": "1024x1024"}],
+              "info": {"version": 1, "author": "xcode"},
+          }))
+          PY
+          sips -z 1024 1024 "$icon_work/original.png" \
+            --out "$icon_work/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
+          xcrun actool "$icon_work/Assets.xcassets" --compile "$app" \
+            --platform iphoneos --minimum-deployment-target 17.0 --target-device iphone \
+            --app-icon AppIcon --output-partial-info-plist "$icon_work/icon-info.plist"
+          python3 - "$app/Info.plist" "$icon_work/icon-info.plist" <<'PY'
+          from pathlib import Path
+          import plistlib
+          import sys
+
+          info, icons = map(Path, sys.argv[1:])
+          plist = plistlib.loads(info.read_bytes())
+          plist.update(plistlib.loads(icons.read_bytes()))
+          plist.update(CFBundleDisplayName="Dead or Alive 3", CFBundleName="Dead or Alive 3")
+          info.write_bytes(plistlib.dumps(plist))
+          PY
           plutil -lint "$app/Info.plist"
           xcrun lipo -verify_arch arm64 "$app/DOA3"
           xcrun vtool -show-build "$app/DOA3" | grep -Eq "platform[[:space:]]+IOS$"
