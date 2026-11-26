@@ -885,6 +885,7 @@ if(RECOMP_PROGRAM_DIR)
 
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         set_property(SOURCE runner.cpp APPEND PROPERTY COMPILE_DEFINITIONS RECOMP_IOS_APP)
+        target_compile_definitions(recomp_program_runner PRIVATE RECOMP_IOS_LIFECYCLE)
         set_target_properties(recomp_program_runner PROPERTIES
             MACOSX_BUNDLE TRUE
             MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/ios-Info.plist.in"

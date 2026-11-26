@@ -10,6 +10,10 @@
 
 #include <SDL3/SDL.h>
 
+#ifdef RECOMP_IOS_LIFECYCLE
+extern "C" void recomp_audio_output_set_suspended(bool suspended);
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -500,6 +504,9 @@ struct RecompD3dPresenter {
     uint64_t target_bytes = 0u;
 
     bool close_requested = false;
+#ifdef RECOMP_IOS_LIFECYCLE
+    bool suspended = false;
+#endif
     uint32_t present_count = 0u;
     uint32_t draw_count = 0u;
 
@@ -601,6 +608,28 @@ void pumpEvents(RecompD3dPresenter *presenter)
     SDL_PumpEvents();
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+#ifdef RECOMP_IOS_LIFECYCLE
+        if (event.type == SDL_EVENT_WILL_ENTER_BACKGROUND ||
+            event.type == SDL_EVENT_DID_ENTER_BACKGROUND) {
+            if (!presenter->suspended) {
+                presenter->suspended = true;
+                recomp_input_keyboard_reset();
+                recomp_audio_output_set_suspended(true);
+            }
+            continue;
+        }
+        if (event.type == SDL_EVENT_DID_ENTER_FOREGROUND) {
+            if (presenter->suspended) {
+                presenter->suspended = false;
+                recomp_audio_output_set_suspended(false);
+            }
+            continue;
+        }
+        if (event.type == SDL_EVENT_TERMINATING) {
+            presenter->close_requested = true;
+            continue;
+        }
+#endif
         // F11 and Alt+Enter switch fullscreen and never reach the game.
         if (event.type == SDL_EVENT_KEY_DOWN && (event.key.key == SDLK_F11 ||
                 ((event.key.mod & SDL_KMOD_ALT) != 0 && (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER)))) {
@@ -3195,7 +3224,9 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     }
     // Take the focus from the launcher: an unfocused window gets no pad input.
     if (!headless) SDL_RaiseWindow(window);
+#ifndef RECOMP_IOS_LIFECYCLE
     SDL_StartTextInput(window); // netplay menu text
+#endif
 
     SDL_GPUPresentMode present_mode = SDL_GPU_PRESENTMODE_VSYNC;
     if (preferMailbox(immediate_present_setting) &&
@@ -3494,6 +3525,14 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         ensureBackbufferResolved(presenter);
 
         pumpEvents(presenter);
+#ifdef RECOMP_IOS_LIFECYCLE
+        // Present runs on the guest thread. Keep UIKit events flowing without
+        // returning to guest code or submitting another frame until foregrounded.
+        while (presenter->suspended && !presenter->close_requested) {
+            SDL_Delay(16);
+            pumpEvents(presenter);
+        }
+#endif
         if (presenter->close_requested) {
             return RECOMP_D3D_PRESENTER_CLOSED;
         }

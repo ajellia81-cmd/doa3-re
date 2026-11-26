@@ -163,6 +163,19 @@ extern "C" void recomp_audio_output_initialize(void)
         spec.freq, spec.channels, static_cast<unsigned>(spec.format), frames);
 }
 
+#if defined(__APPLE__)
+extern "C" void recomp_audio_output_set_suspended(bool suspended)
+{
+    std::lock_guard<std::mutex> lock(audio_mutex);
+    if (audio_device == 0) return;
+    if (suspended) {
+        SDL_PauseAudioDevice(audio_device);
+    } else {
+        SDL_ResumeAudioDevice(audio_device);
+    }
+}
+#endif
+
 extern "C" void recomp_audio_output_shutdown(void)
 {
     std::lock_guard<std::mutex> lock(audio_mutex);
