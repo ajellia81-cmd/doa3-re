@@ -6,7 +6,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: doa3-ios-${{ github.ref }}
+  group: doa3-ios-device-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   ios-runtime:
@@ -155,8 +155,8 @@ jobs:
           info.write_bytes(plistlib.dumps(plist))
           PY
           plutil -lint "$app/Info.plist"
-          xcrun lipo -verify_arch arm64 "$app/DOA3"
-          xcrun vtool -show-build "$app/DOA3" | grep -Eq "platform[[:space:]]+IOS$"
+          xcrun lipo "$app/DOA3" -verify_arch arm64
+          xcrun vtool -show-build "$app/DOA3" | grep -Eq "platform[[:space:]]+IOS[[:space:]]*$"
           mkdir -p build/package/Payload
           ditto "$app" build/package/Payload/DOA3.app
           (cd build/package && zip -qry ../DOA3-Japan-3.1-unsigned.ipa Payload)
