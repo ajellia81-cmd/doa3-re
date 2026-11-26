@@ -1,0 +1,24 @@
+name: iOS runtime cross-build
+on:
+  push:
+    branches: [ios-port]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ios-runtime:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure the arm64 iPhone device target
+        run: |
+          cmake -S recomp-runtime -B build/ios -G Ninja \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
+      - name: Cross-compile the runtime and SDL GPU presenter
+        run: cmake --build build/ios --parallel 3 --target recomp_runtime_test recomp_d3d_presenter_sdl_gpu_test
