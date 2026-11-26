@@ -10,7 +10,7 @@ jobs:
     concurrency:
       group: doa3-ipa-${{ github.ref }}
       cancel-in-progress: false
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 90
     steps:
       - id: input
@@ -79,7 +79,13 @@ jobs:
       - name: Compile and package the unsigned iPhone app
         if: steps.input.outputs.ready == 'true'
         run: |
-          brew list sdl3 >/dev/null 2>&1 || brew install sdl3
+          git clone --depth 1 --branch release-3.4.12 https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/sdl"
+          cmake -S "$RUNNER_TEMP/sdl" -B build/sdl-mac -G Ninja \
+            -DCMAKE_OSX_SYSROOT=macosx -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/sdl-mac" \
+            -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF
+          cmake --build build/sdl-mac --parallel 3
+          cmake --install build/sdl-mac
           git clone https://github.com/zorrobyte/macos-on-ios-public.git "$RUNNER_TEMP/compat"
           git -C "$RUNNER_TEMP/compat" checkout c2562a333d4de4c08da4ceb4a4f1485bddb84e04
           python3 - <<'PY'
@@ -93,7 +99,7 @@ jobs:
           s = s.replace("int main(int argc, char **argv)", "static int game_main(int argc, char **argv)")
           runner.write_text(s + "\nint main(int argc, char **argv) { return SDL_RunApp(argc, argv, game_main, nullptr); }\n")
           PY
-          cmake -S recomp-runtime -B build/mac -G Ninja -DCMAKE_OSX_SYSROOT=macosx -DCMAKE_OSX_ARCHITECTURES=arm64 \
+          cmake -S recomp-runtime -DSDL3_DIR="$RUNNER_TEMP/sdl-mac/lib/cmake/SDL3" -B build/mac -G Ninja -DCMAKE_OSX_SYSROOT=macosx -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS="-lobjc" -DCMAKE_CXX_FLAGS="-DRECOMP_IOS_APP -DRECOMP_IOS_LIFECYCLE" \
             -DRECOMP_DOA3_JP=ON -DRECOMP_PROGRAM_DIR="$DOA3_GENERATED" \
             -DRECOMP_PROGRAM_MANIFEST_SHA256="$DOA3_MANIFEST" -DRECOMP_PROGRAM_EBP_EXPECTED="$DOA3_EBP"
@@ -109,13 +115,12 @@ jobs:
           binary="$mac/Contents/MacOS/DOA3"
           sdl=$(otool -L "$binary" | awk '/libSDL3.*dylib/{print $1;exit}')
           name=$(basename "$sdl")
-          cp -L "$(brew --prefix sdl3)/lib/$name" "$mac/Contents/Frameworks/$name"
+          cp -L "$RUNNER_TEMP/sdl-mac/lib/$name" "$mac/Contents/Frameworks/$name"
           install_name_tool -change "$sdl" "@executable_path/../Frameworks/$name" "$binary"
           xcrun vtool -show-build "$binary" | grep 'platform MACOS'
           app="$PWD/build/converted/DOA3.app"
           mkdir -p "$(dirname "$app")"
           python3 "$RUNNER_TEMP/compat/tools/convert_app.py" "$mac" "$app" com.doa3re.ios --profile /dev/null --identity - --team UNSIGNED --no-metal-hud
-          git clone --depth 1 --branch release-3.4.12 https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/sdl"
           cmake -S "$RUNNER_TEMP/sdl" -B build/sdl-ios -G Ninja -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF
           cmake --build build/sdl-ios --target SDL3-shared --parallel 3
           target=$(find "$app" -name "$name" -type f | head -1)
