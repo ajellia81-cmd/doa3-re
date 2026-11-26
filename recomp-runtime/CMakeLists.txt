@@ -883,6 +883,14 @@ if(RECOMP_PROGRAM_DIR)
             d3d_presenter_sdl_gpu.cpp overlay_sdl_gpu.cpp)
     endif()
 
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set_property(SOURCE runner.cpp APPEND PROPERTY COMPILE_DEFINITIONS RECOMP_IOS_APP)
+        set_target_properties(recomp_program_runner PROPERTIES
+            MACOSX_BUNDLE TRUE
+            MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/ios-Info.plist.in"
+            OUTPUT_NAME DOA3)
+    endif()
+
     # Settings launcher for launcher.sh. SteamOS has no compiler, so it is built
     # beside the runner rather than on first use like the macOS launcher.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
