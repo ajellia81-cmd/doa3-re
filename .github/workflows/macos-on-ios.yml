@@ -85,18 +85,16 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           root = Path("recomp-runtime")
-          for p in root.rglob("*"):
-              if p.suffix in {".cpp", ".c", ".h", ".mm"}:
-                  s = p.read_text()
-                  if "TARGET_OS_IOS" in s:
-                      p.write_text(s.replace("TARGET_OS_IOS", "1"))
+          for filename in ("input_host_win32.c", "d3d_frame_adapter.c"):
+              p = root / filename
+              p.write_text(p.read_text().replace("defined(TARGET_OS_IOS) && TARGET_OS_IOS", "1"))
           runner = root / "runner.cpp"
           s = runner.read_text().replace("#include <SDL3/SDL_main.h>", "#define SDL_MAIN_HANDLED\n#include <SDL3/SDL_main.h>")
           s = s.replace("int main(int argc, char **argv)", "static int game_main(int argc, char **argv)")
           runner.write_text(s + "\nint main(int argc, char **argv) { return SDL_RunApp(argc, argv, game_main, nullptr); }\n")
           PY
           cmake -S recomp-runtime -B build/mac -G Ninja -DCMAKE_OSX_SYSROOT=macosx -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-DRECOMP_IOS_APP -DRECOMP_IOS_LIFECYCLE" \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS="-lobjc" -DCMAKE_CXX_FLAGS="-DRECOMP_IOS_APP -DRECOMP_IOS_LIFECYCLE" \
             -DRECOMP_DOA3_JP=ON -DRECOMP_PROGRAM_DIR="$DOA3_GENERATED" \
             -DRECOMP_PROGRAM_MANIFEST_SHA256="$DOA3_MANIFEST" -DRECOMP_PROGRAM_EBP_EXPECTED="$DOA3_EBP"
           log="$RUNNER_TEMP/doa3-build.log"
@@ -172,6 +170,7 @@ jobs:
           plutil -lint "$app/Info.plist"
           xcrun lipo "$app/DOA3" -verify_arch arm64
           xcrun vtool -show-build "$app/DOA3" | grep -Eq "platform[[:space:]]+IOS[[:space:]]*$"
+          rm -f "$app/embedded.mobileprovision"
           codesign --force --deep --sign - "$app"
           codesign --verify --deep --strict "$app"
           mkdir -p build/package/Payload
