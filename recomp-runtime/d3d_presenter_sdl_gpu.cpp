@@ -3577,7 +3577,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                     presentClientWidth(presenter, mainHeight(presenter))) / mainHeight(presenter);
 #ifdef RECOMP_IOS_LIFECYCLE
                 const bool frontend = recomp_ios_frontend_frame();
-                src_aspect = frontend ? 4.0f / 3.0f : static_cast<float>(swap_w) / swap_h;
+                src_aspect = frontend ? 16.0f / 9.0f : static_cast<float>(swap_w) / swap_h;
 #endif
                 const float dst_aspect = static_cast<float>(swap_w) / swap_h;
                 int dst_x = 0, dst_y = 0, dst_w = swap_w, dst_h = swap_h;
@@ -3614,7 +3614,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 blit.source.w = source_w;
 #ifdef RECOMP_IOS_LIFECYCLE
                 if (frontend && presenter->widescreen) {
-                    blit.source.w = (std::min)(source_w, (source_h * 4u + 1u) / 3u);
+                    blit.source.w = (std::min)(source_w, (source_h * 16u + 4u) / 9u);
                     blit.source.x = (source_w - blit.source.w) / 2u;
                 }
 #endif
