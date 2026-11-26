@@ -13,6 +13,17 @@
 #include "stop_report.h"
 #include "save_transaction.h"
 #include "xbox_memory_layout.h"
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
+#if defined(TARGET_OS_IOS) && TARGET_OS_IOS && defined(RECOMP_FULL_PROGRAM)
+bool recomp_ios_frontend_frame(void)
+{
+    /* Same guest front-end state used by the original main-menu adapter. */
+    return *recomp_memory(DOA3(0x00480b70u, 0x00598e80u, 0x005998c0u), 1u) == 0u;
+}
+#endif
 
 #include <stdio.h>
 #include <inttypes.h>

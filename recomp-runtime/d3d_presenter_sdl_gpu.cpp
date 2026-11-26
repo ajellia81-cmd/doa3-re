@@ -12,6 +12,7 @@
 
 #ifdef RECOMP_IOS_LIFECYCLE
 extern "C" void recomp_audio_output_set_suspended(bool suspended);
+extern "C" bool recomp_ios_frontend_frame(void);
 #endif
 
 #include <algorithm>
@@ -606,6 +607,9 @@ uint32_t virtualKey(SDL_Scancode code)
 void pumpEvents(RecompD3dPresenter *presenter)
 {
     SDL_PumpEvents();
+#ifdef RECOMP_IOS_LIFECYCLE
+    recomp_ios_touch_refresh();
+#endif
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
 #ifdef RECOMP_IOS_LIFECYCLE
@@ -614,6 +618,7 @@ void pumpEvents(RecompD3dPresenter *presenter)
             if (!presenter->suspended) {
                 presenter->suspended = true;
                 recomp_input_keyboard_reset();
+                recomp_ios_touch_reset();
                 recomp_audio_output_set_suspended(true);
             }
             continue;
@@ -628,6 +633,12 @@ void pumpEvents(RecompD3dPresenter *presenter)
         if (event.type == SDL_EVENT_TERMINATING) {
             presenter->close_requested = true;
             continue;
+        }
+#endif
+#ifdef RECOMP_IOS_LIFECYCLE
+        if (!presenter->suspended && event.type >= SDL_EVENT_FINGER_DOWN &&
+            event.type <= SDL_EVENT_FINGER_CANCELED) {
+            recomp_ios_touch_event(event);
         }
 #endif
         // F11 and Alt+Enter switch fullscreen and never reach the game.
@@ -3562,8 +3573,12 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 SDL_GPUBlitInfo blit{};
                 blit.destination.texture = swapchain_tex;
 
-                const float src_aspect = static_cast<float>(
+                float src_aspect = static_cast<float>(
                     presentClientWidth(presenter, mainHeight(presenter))) / mainHeight(presenter);
+#ifdef RECOMP_IOS_LIFECYCLE
+                const bool frontend = recomp_ios_frontend_frame();
+                src_aspect = frontend ? 4.0f / 3.0f : static_cast<float>(swap_w) / swap_h;
+#endif
                 const float dst_aspect = static_cast<float>(swap_w) / swap_h;
                 int dst_x = 0, dst_y = 0, dst_w = swap_w, dst_h = swap_h;
                 if (dst_aspect > src_aspect) {
@@ -3597,6 +3612,12 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 blit.source.texture = source;
                 blit.source.mip_level = mip;
                 blit.source.w = source_w;
+#ifdef RECOMP_IOS_LIFECYCLE
+                if (frontend && presenter->widescreen) {
+                    blit.source.w = (std::min)(source_w, (source_h * 4u + 1u) / 3u);
+                    blit.source.x = (source_w - blit.source.w) / 2u;
+                }
+#endif
                 blit.source.h = source_h;
                 blit.destination.x = dst_x;
                 blit.destination.y = dst_y;

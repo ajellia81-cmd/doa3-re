@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "runner_boot.h"
+#ifdef __APPLE__
+#include <SDL3/SDL.h>
+#endif
 #include "cri_service_adapter.h"
 extern "C" {
 #include "program_manual.h"
@@ -154,7 +157,11 @@ void chooseScreenShape(bool online)
 {
     static const std::string own = [] {
         const char *value = std::getenv("RECOMP_D3D_WIDESCREEN");
-        return std::string(value != nullptr ? value : "0"); // unset reads as 0, the dashboard's 4:3
+        #if defined(__APPLE__)
+        return std::string(value != nullptr ? value : (SDL_GetPlatform() == std::string("iOS") ? "2868:1320" : "0"));
+#else
+        return std::string(value != nullptr ? value : "0");
+#endif
     }();
     const char *shape = online ? "16:9" : own.c_str();
 #ifdef _WIN32

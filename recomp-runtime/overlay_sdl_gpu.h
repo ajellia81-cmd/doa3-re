@@ -5,6 +5,13 @@
 
 #include "overlay_text.h"
 
+#ifdef RECOMP_IOS_LIFECYCLE
+#include <SDL3/SDL_events.h>
+void recomp_ios_touch_refresh(void);
+void recomp_ios_touch_reset(void);
+void recomp_ios_touch_event(const SDL_Event &event);
+#endif
+
 /* Draws the runtime's overlay text (overlay_text.h) with Dear ImGui into a
    colour target of the window's swapchain format, after the game's frame.
    Created on first use; nothing is drawn while the overlay is empty. */

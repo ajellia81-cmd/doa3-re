@@ -27,6 +27,18 @@ enum {
 
 static SDL_Gamepad *pads[RECOMP_INPUT_PORT_COUNT];
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+#if defined(TARGET_OS_IOS) && TARGET_OS_IOS
+static RecompInputGamepad touch_pad;
+
+void recomp_ios_touch_set_pad(const RecompInputGamepad *pad)
+{
+    touch_pad = *pad;
+}
+#endif
+
 #ifdef _WIN32
 #define KEY(virtual_key, scancode) (virtual_key)
 #else
@@ -493,6 +505,15 @@ static bool sample(uint32_t port, RecompInputGamepad *gamepad, uint16_t *stick_c
     if (port != 0u && host == NULL) return false;
     /* Keys first, so the keyboard's Tab (L3) and menu buttons reach the combo hook. */
     const bool keys = port == 0u && merge_keyboard(gamepad);
+#if defined(TARGET_OS_IOS) && TARGET_OS_IOS
+    if (port == 0u && !SDL_HasGamepad()) {
+        gamepad->buttons |= touch_pad.buttons;
+        for (unsigned i = 0; i < RECOMP_INPUT_ANALOG_BUTTON_COUNT; ++i) {
+            if (touch_pad.analog_buttons[i] > gamepad->analog_buttons[i])
+                gamepad->analog_buttons[i] = touch_pad.analog_buttons[i];
+        }
+    }
+#endif
     *stick_clicks = gamepad->buttons & (XBOX_LEFT_THUMB | XBOX_RIGHT_THUMB);
     if (combo_hook != NULL) withhold_for_combo(port, gamepad);
     if (port == 0u) trace_sample(gamepad, host, keys);
