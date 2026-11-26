@@ -5,6 +5,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: doa3-ios-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   ios-runtime:
     runs-on: macos-15
@@ -33,8 +36,8 @@ jobs:
           GH_TOKEN: ${{ secrets.DOA3_PRIVATE_RELEASE_TOKEN }}
         run: |
           if [[ -z "$GH_TOKEN" ]]; then
-            echo "Private release token is not configured."
-            exit 0
+            echo "::error::Set DOA3_PRIVATE_RELEASE_TOKEN in repository Actions secrets, then rerun this job."
+            exit 1
           fi
           gh release download build-input --repo ajellia81-cmd/doa3-ios-private \
             --pattern 'Default.xbe' --dir "$RUNNER_TEMP/doa3-input"
