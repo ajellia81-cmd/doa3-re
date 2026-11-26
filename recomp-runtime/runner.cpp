@@ -54,6 +54,12 @@
 #include <pthread.h>
 #endif
 
+#ifdef RECOMP_IOS_APP
+#include <SDL3/SDL_filesystem.h>
+#include <SDL3/SDL_main.h>
+#include <SDL3/SDL_messagebox.h>
+#endif
+
 #ifdef RECOMP_FULL_PROGRAM
 RecompInputPulseSource inputPulseSource;
 std::uint32_t inputFrame;
@@ -584,6 +590,19 @@ int main(int argc, char **argv)
 #endif
 
     std::string xbePath;
+#ifdef RECOMP_IOS_APP
+    if (const char *documents = SDL_GetUserFolder(SDL_FOLDER_DOCUMENTS)) {
+        const auto disc = std::filesystem::path(documents) / "DOA3";
+        std::error_code error;
+        for (const auto &entry : std::filesystem::directory_iterator(disc, error)) {
+            const auto filename = entry.path().filename().string();
+            if (SDL_strcasecmp(filename.c_str(), "default.xbe") == 0) {
+                xbePath = entry.path().string();
+                break;
+            }
+        }
+    }
+#endif
     std::string expectStop;
     std::string stopAt;
     std::string milestoneLog;
@@ -934,6 +953,10 @@ std::vector<AnalogPulse> inputAnalogPulses;
     if (recomp_synctest_enabled()) deterministic = true;
 #endif
     if (xbePath.empty()) {
+#ifdef RECOMP_IOS_APP
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Game data required",
+            "Copy the extracted Japan 3.1 disc into the app\x27s Documents/DOA3 folder.", nullptr);
+#endif
         std::cerr << "usage: recomp_runner --xbe <path>"
                      " [--expect-stop <id>] [--stop-at <id>]"
                      " [--milestone-log <path>]"
