@@ -22,3 +22,104 @@ jobs:
             -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
       - name: Cross-compile the runtime and SDL GPU presenter
         run: cmake --build build/ios --parallel 3 --target recomp_runtime_test recomp_d3d_presenter_sdl_gpu_test
+
+  ios-ipa:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - id: input
+        name: Read the private Japan 3.1 input
+        env:
+          GH_TOKEN: ${{ secrets.DOA3_PRIVATE_RELEASE_TOKEN }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "Private release token is not configured."
+            exit 0
+          fi
+          gh release download build-input --repo ajellia81-cmd/doa3-ios-private \
+            --pattern 'Default.xbe' --dir "$RUNNER_TEMP/doa3-input"
+          echo '469cb086048020d04fbc45b05fd5c470b479f06013d77d736c0ea11df5de85df  Default.xbe' \
+            | (cd "$RUNNER_TEMP/doa3-input" && shasum -a 256 -c -)
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        if: steps.input.outputs.ready == 'true'
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Recompile the authenticated game program
+        if: steps.input.outputs.ready == 'true'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/doa3-venv"
+          "$RUNNER_TEMP/doa3-venv/bin/pip" install capstone==5.0.7
+          "$RUNNER_TEMP/doa3-venv/bin/python" - <<'PY'
+          import gzip
+          import os
+          from pathlib import Path
+          import sys
+
+          sys.path.insert(0, "tools")
+          import build_game as upstream
+
+          xbe = Path(os.environ["RUNNER_TEMP"]) / "doa3-input" / "Default.xbe"
+          _, version = upstream.disc_version(xbe.parent)
+          recipe = upstream.ROOT / "tools" / version["recipe"]
+          work = Path(os.environ["RUNNER_TEMP"]) / "doa3-lift"
+          work.mkdir()
+          generated = work / "generated"
+          functions = work / "functions.json"
+          functions.write_bytes(gzip.decompress((recipe / "functions.json.gz").read_bytes()))
+          import subprocess
+
+          command = [
+              sys.executable, "-u", "-m", "tools.recomp", str(xbe),
+              "--all", "--split", "1000", "--game-name", "Dead or Alive 3",
+              "--functions", str(functions), "--disasm-dir", str(work / "none"),
+              "--func-id-dir", str(work / "none"), "--abi-dir", str(work / "none"),
+              "--icall-sites", str(work / "none.json"),
+              "--manual-functions", str(recipe / "manual_functions.json"),
+              "--exclude-manual", str(upstream.ROOT / "recomp-runtime" / version["forwards"]),
+              "--gen-dir", str(generated), "--output-dir", str(work / "metadata"),
+          ]
+          with (work / "lift.log").open("w") as log:
+              subprocess.run(command, cwd=upstream.LIFTER, stdout=log,
+                             stderr=subprocess.STDOUT, check=True)
+          upstream.use_windows_newlines(generated)
+          manifest, ebp = upstream.program_manifest(generated)
+          if (manifest, ebp) != (version["program"], version["ebp"]):
+              raise SystemExit("Generated program does not match the upstream manifest.")
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write(f"DOA3_GENERATED={generated}\nDOA3_MANIFEST={manifest}\nDOA3_EBP={ebp}\n")
+          PY
+      - name: Compile and package the unsigned iPhone app
+        if: steps.input.outputs.ready == 'true'
+        run: |
+          cmake -S recomp-runtime -B build/ios-device -G Ninja \
+            -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+            -DRECOMP_DOA3_JP=ON -DRECOMP_PROGRAM_DIR="$DOA3_GENERATED" \
+            -DRECOMP_PROGRAM_MANIFEST_SHA256="$DOA3_MANIFEST" \
+            -DRECOMP_PROGRAM_EBP_EXPECTED="$DOA3_EBP"
+          log="$RUNNER_TEMP/doa3-device-build.log"
+          if ! cmake --build build/ios-device --parallel 3 --target recomp_program_runner >"$log" 2>&1; then
+            grep -E '(^[^ ]*:[0-9]+:[0-9]+: (fatal )?error:|^ld:|^Undefined symbols|^clang: error:)' "$log" | head -40 || true
+            exit 1
+          fi
+          app=build/ios-device/DOA3.app
+          test -x "$app/DOA3"
+          plutil -lint "$app/Info.plist"
+          xcrun lipo -verify_arch arm64 "$app/DOA3"
+          mkdir -p build/package/Payload
+          ditto "$app" build/package/Payload/DOA3.app
+          (cd build/package && zip -qry ../DOA3-Japan-3.1-unsigned.ipa Payload)
+          unzip -tq build/DOA3-Japan-3.1-unsigned.ipa
+      - name: Deliver the IPA to the private repository
+        if: steps.input.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.DOA3_PRIVATE_RELEASE_TOKEN }}
+        run: |
+          gh release create "ios-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            build/DOA3-Japan-3.1-unsigned.ipa \
+            --repo ajellia81-cmd/doa3-ios-private --prerelease \
+            --title "DOA3 Japan 3.1 iOS unsigned build" \
+            --notes "ARM64 iPhone build. Install with your own extracted Japan 3.1 disc data."
