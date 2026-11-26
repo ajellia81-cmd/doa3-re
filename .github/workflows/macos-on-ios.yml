@@ -1,0 +1,190 @@
+name: DOA3 macOS-on-iOS
+on:
+  push:
+    branches: [macos-on-ios]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ios-ipa:
+    concurrency:
+      group: doa3-ipa-${{ github.ref }}
+      cancel-in-progress: false
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - id: input
+        name: Read the private Japan 3.1 input
+        env:
+          GH_TOKEN: ${{ secrets.DOA3_PRIVATE_RELEASE_TOKEN }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::Set DOA3_PRIVATE_RELEASE_TOKEN in repository Actions secrets, then rerun this job."
+            exit 1
+          fi
+          gh release download build-input --repo ajellia81-cmd/doa3-ios-private \
+            --pattern 'Default.xbe' --dir "$RUNNER_TEMP/doa3-input"
+          echo '469cb086048020d04fbc45b05fd5c470b479f06013d77d736c0ea11df5de85df  Default.xbe' \
+            | (cd "$RUNNER_TEMP/doa3-input" && shasum -a 256 -c -)
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        if: steps.input.outputs.ready == 'true'
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Recompile the authenticated game program
+        if: steps.input.outputs.ready == 'true'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/doa3-venv"
+          "$RUNNER_TEMP/doa3-venv/bin/pip" install capstone==5.0.7
+          "$RUNNER_TEMP/doa3-venv/bin/python" - <<'PY'
+          import gzip
+          import os
+          from pathlib import Path
+          import sys
+
+          sys.path.insert(0, "tools")
+          import build_game as upstream
+
+          xbe = Path(os.environ["RUNNER_TEMP"]) / "doa3-input" / "Default.xbe"
+          _, version = upstream.disc_version(xbe.parent)
+          recipe = upstream.ROOT / "tools" / version["recipe"]
+          work = Path(os.environ["RUNNER_TEMP"]) / "doa3-lift"
+          work.mkdir()
+          generated = work / "generated"
+          functions = work / "functions.json"
+          functions.write_bytes(gzip.decompress((recipe / "functions.json.gz").read_bytes()))
+          import subprocess
+
+          command = [
+              sys.executable, "-u", "-m", "tools.recomp", str(xbe),
+              "--all", "--split", "1000", "--game-name", "Dead or Alive 3",
+              "--functions", str(functions), "--disasm-dir", str(work / "none"),
+              "--func-id-dir", str(work / "none"), "--abi-dir", str(work / "none"),
+              "--icall-sites", str(work / "none.json"),
+              "--manual-functions", str(recipe / "manual_functions.json"),
+              "--exclude-manual", str(upstream.ROOT / "recomp-runtime" / version["forwards"]),
+              "--gen-dir", str(generated), "--output-dir", str(work / "metadata"),
+          ]
+          with (work / "lift.log").open("w") as log:
+              subprocess.run(command, cwd=upstream.LIFTER, stdout=log,
+                             stderr=subprocess.STDOUT, check=True)
+          upstream.use_windows_newlines(generated)
+          manifest, ebp = upstream.program_manifest(generated)
+          if (manifest, ebp) != (version["program"], version["ebp"]):
+              raise SystemExit("Generated program does not match the upstream manifest.")
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write(f"DOA3_GENERATED={generated}\nDOA3_MANIFEST={manifest}\nDOA3_EBP={ebp}\n")
+          PY
+      - name: Compile and package the unsigned iPhone app
+        if: steps.input.outputs.ready == 'true'
+        run: |
+          brew list sdl3 >/dev/null 2>&1 || brew install sdl3
+          git clone https://github.com/zorrobyte/macos-on-ios-public.git "$RUNNER_TEMP/compat"
+          git -C "$RUNNER_TEMP/compat" checkout c2562a333d4de4c08da4ceb4a4f1485bddb84e04
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path("recomp-runtime")
+          for p in root.rglob("*"):
+              if p.suffix in {".cpp", ".c", ".h", ".mm"}:
+                  s = p.read_text()
+                  if "TARGET_OS_IOS" in s:
+                      p.write_text(s.replace("TARGET_OS_IOS", "1"))
+          runner = root / "runner.cpp"
+          s = runner.read_text().replace("#include <SDL3/SDL_main.h>", "#define SDL_MAIN_HANDLED\n#include <SDL3/SDL_main.h>")
+          s = s.replace("int main(int argc, char **argv)", "static int game_main(int argc, char **argv)")
+          runner.write_text(s + "\nint main(int argc, char **argv) { return SDL_RunApp(argc, argv, game_main, nullptr); }\n")
+          PY
+          cmake -S recomp-runtime -B build/mac -G Ninja -DCMAKE_OSX_SYSROOT=macosx -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-DRECOMP_IOS_APP -DRECOMP_IOS_LIFECYCLE" \
+            -DRECOMP_DOA3_JP=ON -DRECOMP_PROGRAM_DIR="$DOA3_GENERATED" \
+            -DRECOMP_PROGRAM_MANIFEST_SHA256="$DOA3_MANIFEST" -DRECOMP_PROGRAM_EBP_EXPECTED="$DOA3_EBP"
+          log="$RUNNER_TEMP/doa3-build.log"
+          if ! cmake --build build/mac --parallel 3 --target recomp_program_runner >"$log" 2>&1; then
+            grep -E '(fatal )?error:|^ld:|^Undefined symbols' "$log" | head -40 || true
+            exit 1
+          fi
+          mac="$RUNNER_TEMP/DOA3.app"
+          mkdir -p "$mac/Contents/"{MacOS,Frameworks,Resources}
+          cp build/mac/recomp_program_runner "$mac/Contents/MacOS/DOA3"
+          cp recomp-runtime/ios-Info.plist.in "$mac/Contents/Info.plist"
+          binary="$mac/Contents/MacOS/DOA3"
+          sdl=$(otool -L "$binary" | awk '/libSDL3.*dylib/{print $1;exit}')
+          name=$(basename "$sdl")
+          cp -L "$(brew --prefix sdl3)/lib/$name" "$mac/Contents/Frameworks/$name"
+          install_name_tool -change "$sdl" "@executable_path/../Frameworks/$name" "$binary"
+          xcrun vtool -show-build "$binary" | grep 'platform MACOS'
+          app="$PWD/build/converted/DOA3.app"
+          mkdir -p "$(dirname "$app")"
+          python3 "$RUNNER_TEMP/compat/tools/convert_app.py" "$mac" "$app" com.doa3re.ios --profile /dev/null --identity - --team UNSIGNED --no-metal-hud
+          git clone --depth 1 --branch release-3.4.12 https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/sdl"
+          cmake -S "$RUNNER_TEMP/sdl" -B build/sdl-ios -G Ninja -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF
+          cmake --build build/sdl-ios --target SDL3-shared --parallel 3
+          target=$(find "$app" -name "$name" -type f | head -1)
+          test -n "$target"
+          cp -L build/sdl-ios/libSDL3.dylib "$target"
+          codesign --force --sign - "$target"
+          icon_work="$RUNNER_TEMP/doa3-icon"
+          mkdir -p "$icon_work/Assets.xcassets/AppIcon.appiconset"
+          curl --fail --location --silent --show-error \
+            https://github.com/NoRain211/doa3-re/releases/download/v0.8.1/DOA3-0.8.1-macOS.tar.gz \
+            -o "$icon_work/upstream.tar.gz"
+          echo "e45eef205bd9956b664fe2f324d1f01fdc40cdb6c09464e504d5fc8c1d72e3cd  $icon_work/upstream.tar.gz" \
+            | shasum -a 256 -c -
+          python3 - "$icon_work" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          import tarfile
+
+          work = Path(sys.argv[1])
+          with tarfile.open(work / "upstream.tar.gz") as archive:
+              icons = [m for m in archive.getmembers()
+                       if m.isfile() and m.name.endswith("/private/launcher-icon.png")]
+              if len(icons) != 1:
+                  raise SystemExit("Expected one original launcher icon in the upstream release.")
+              with archive.extractfile(icons[0]) as icon:
+                  (work / "original.png").write_bytes(icon.read())
+          catalog = work / "Assets.xcassets"
+          (catalog / "Contents.json").write_text(json.dumps({"info": {"version": 1, "author": "xcode"}}))
+          (catalog / "AppIcon.appiconset" / "Contents.json").write_text(json.dumps({
+              "images": [{"filename": "AppIcon.png", "idiom": "universal", "platform": "ios", "size": "1024x1024"}],
+              "info": {"version": 1, "author": "xcode"},
+          }))
+          PY
+          sips -z 1024 1024 "$icon_work/original.png" \
+            --out "$icon_work/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
+          xcrun actool "$icon_work/Assets.xcassets" --compile "$app" \
+            --platform iphoneos --minimum-deployment-target 17.0 --target-device iphone \
+            --app-icon AppIcon --output-partial-info-plist "$icon_work/icon-info.plist"
+          python3 - "$app/Info.plist" "$icon_work/icon-info.plist" <<'PY'
+          from pathlib import Path
+          import plistlib
+          import sys
+
+          info, icons = map(Path, sys.argv[1:])
+          plist = plistlib.loads(info.read_bytes())
+          plist.update(plistlib.loads(Path('recomp-runtime/ios-Info.plist.in').read_bytes()))
+          plist.update(plistlib.loads(icons.read_bytes()))
+          plist.update(CFBundleDisplayName="Dead or Alive 3", CFBundleName="Dead or Alive 3")
+          info.write_bytes(plistlib.dumps(plist))
+          PY
+          plutil -lint "$app/Info.plist"
+          xcrun lipo "$app/DOA3" -verify_arch arm64
+          xcrun vtool -show-build "$app/DOA3" | grep -Eq "platform[[:space:]]+IOS[[:space:]]*$"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          mkdir -p build/package/Payload
+          ditto "$app" build/package/Payload/DOA3.app
+          (cd build/package && zip -qry ../DOA3-Japan-3.1-macOS-on-iOS-unsigned.ipa Payload)
+          unzip -tq build/DOA3-Japan-3.1-macOS-on-iOS-unsigned.ipa
+      - name: Deliver the IPA to the private repository
+        if: steps.input.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.DOA3_PRIVATE_RELEASE_TOKEN }}
+        run: |
+          gh release create "ios-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            build/DOA3-Japan-3.1-macOS-on-iOS-unsigned.ipa \
+            --repo ajellia81-cmd/doa3-ios-private --prerelease \
+            --title "DOA3 Japan 3.1 iOS unsigned build" \
+            --notes "ARM64 iPhone build. Install with your own extracted Japan 3.1 disc data."
