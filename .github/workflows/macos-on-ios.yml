@@ -120,6 +120,21 @@ jobs:
           xcrun vtool -show-build "$binary" | grep 'platform MACOS'
           app="$PWD/build/converted/DOA3.app"
           mkdir -p "$(dirname "$app")"
+          export DEVELOPER_DIR="$(python3 - <<'PY'
+          import re
+          from pathlib import Path
+          versions = []
+          for app in Path("/Applications").glob("Xcode_*.app"):
+              version = re.fullmatch(r"Xcode_(\d+(?:\.\d+)*)\.app", app.name)
+              if version:
+                  parts = tuple(map(int, version[1].split(".")))
+                  if parts[0] >= 26:
+                      versions.append((parts, app))
+          print(max(versions)[1] / "Contents/Developer")
+          PY
+          )"
+          test -d "$DEVELOPER_DIR"
+          xcrun --sdk iphoneos --show-sdk-version
           python3 "$RUNNER_TEMP/compat/tools/convert_app.py" "$mac" "$app" com.doa3re.ios --profile /dev/null --identity - --team UNSIGNED --no-metal-hud
           cmake -S "$RUNNER_TEMP/sdl" -B build/sdl-ios -G Ninja -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF
           cmake --build build/sdl-ios --target SDL3-shared --parallel 3
