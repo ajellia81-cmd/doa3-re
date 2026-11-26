@@ -5,11 +5,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-concurrency:
-  group: doa3-ios-device-${{ github.ref }}
-  cancel-in-progress: false
 jobs:
   ios-runtime:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-15
     timeout-minutes: 20
     steps:
@@ -27,6 +25,9 @@ jobs:
         run: cmake --build build/ios --parallel 3 --target recomp_runtime_test recomp_d3d_presenter_sdl_gpu_test
 
   ios-ipa:
+    concurrency:
+      group: doa3-ipa-${{ github.ref }}
+      cancel-in-progress: false
     runs-on: macos-15-intel
     timeout-minutes: 45
     steps:
