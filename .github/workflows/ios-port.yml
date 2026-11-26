@@ -112,6 +112,7 @@ jobs:
           test -x "$app/DOA3"
           plutil -lint "$app/Info.plist"
           xcrun lipo -verify_arch arm64 "$app/DOA3"
+          xcrun vtool -show-build "$app/DOA3" | grep -Eq "platform[[:space:]]+IOS$"
           mkdir -p build/package/Payload
           ditto "$app" build/package/Payload/DOA3.app
           (cd build/package && zip -qry ../DOA3-Japan-3.1-unsigned.ipa Payload)
