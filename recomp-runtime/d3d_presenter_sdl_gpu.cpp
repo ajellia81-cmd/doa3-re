@@ -595,6 +595,63 @@ float iosUiCanvasFraction(const RecompD3dPresenter *presenter)
 {
     return std::min(1.0f, iosUiAspect * presenter->aspect_h / presenter->aspect_w);
 }
+
+// Observe the controller settings atlas in guest coordinates, independent
+// of the projection applied to the rest of the UI.
+void observeMenuButton(const RecompD3dPresenterDrawCommand &draw, unsigned uvOffset,
+    float guestWidth, float guestHeight)
+{
+    const auto &texture = draw.texture;
+    const bool indexed = texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_P8 &&
+        !texture.linear && draw.palette_bytes && draw.palette_byte_count >= 1024;
+    const bool direct = texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 ||
+        texture.format_byte == 0x07u || (texture.linear && texture.format_byte == 0x12u);
+    if (!draw.has_texture || draw.texture_is_backbuffer || !draw.texture_bytes ||
+        (!indexed && !direct) || draw.vertex_count < 4 || draw.vertex_count > 6 ||
+        uvOffset == RECOMP_D3D_FVF_ABSENT || uvOffset + 8 > draw.vertex_stride) return;
+
+    float x0=INFINITY, y0=INFINITY, x1=-INFINITY, y1=-INFINITY;
+    float u0=INFINITY, v0=INFINITY, u1=-INFINITY, v1=-INFINITY;
+    const auto *vertices = static_cast<const uint8_t *>(draw.vertex_bytes);
+    for (unsigned i=0; i<draw.vertex_count; ++i) {
+        float xy[2], uv[2];
+        std::memcpy(xy,vertices+i*draw.vertex_stride,8);
+        std::memcpy(uv,vertices+i*draw.vertex_stride+uvOffset,8);
+        if (!std::isfinite(xy[0]) || !std::isfinite(xy[1]) ||
+            !std::isfinite(uv[0]) || !std::isfinite(uv[1])) return;
+        x0=std::min(x0,xy[0]); x1=std::max(x1,xy[0]);
+        y0=std::min(y0,xy[1]); y1=std::max(y1,xy[1]);
+        u0=std::min(u0,uv[0]); u1=std::max(u1,uv[0]);
+        v0=std::min(v0,uv[1]); v1=std::max(v1,uv[1]);
+    }
+
+    // Calibrated against the retail Button Config grid. The x coordinate is
+    // mapped back from the former 4:3 menu transform to guest layout units.
+    constexpr float iconX = .71f;
+    constexpr float firstRow = .189f;
+    constexpr float rowSpacing = .071f;
+    const float centerY = (y0+y1)*.5f/guestHeight;
+    if (centerY < .16f || centerY > .72f) return;
+    const int row = int(std::lround((centerY-firstRow)/rowSpacing));
+    if (row<0 || row>=8 || std::abs(centerY-firstRow-row*rowSpacing)>.018f) return;
+    const float width = (x1-x0)/guestWidth, height = (y1-y0)/guestHeight;
+    if (width<=0.f || width>.35f || height<.02f || height>.09f) return;
+    const float anchor = (iconX-x0/guestWidth)/width;
+    if (anchor<0.f || anchor>1.f) return;
+    if (width > .085f) {
+        // The icon shares the left edge of the action strip.
+        if (anchor>.30f) return;
+        const float halfWidth = .018f / width;
+        const float left = u0 + (u1-u0)*std::max(0.f,anchor-halfWidth);
+        const float right = u0 + (u1-u0)*std::min(1.f,anchor+halfWidth);
+        u0=left; u1=right;
+    }
+    const float uScale=texture.linear?1.f:float(texture.width);
+    const float vScale=texture.linear?1.f:float(texture.height);
+    if (u0<0 || v0<0 || u1*uScale>texture.width || v1*vScale>texture.height) return;
+    recomp_ios_observe_icon(row,draw,int(std::lround(u0*uScale)),int(std::lround(v0*vScale)),
+        int(std::lround((u1-u0)*uScale)),int(std::lround((v1-v0)*vScale)));
+}
 #endif
 
 namespace {
@@ -3663,6 +3720,9 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             return RECOMP_D3D_PRESENTER_CLOSED;
         }
 
+#ifdef RECOMP_IOS_LIFECYCLE
+        recomp_ios_finish_icons();
+#endif
         const Uint64 presentStart = SDL_GetTicksNS();
         constexpr Uint64 slowGuestFrame = 21000000;
         constexpr Uint64 retryDelay = 2000000000;
@@ -4065,6 +4125,8 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 // A frontend sprite is already laid out in guest screen
                 // coordinates. Apply the canvas transform exactly once,
                 // regardless of its position, texture or primitive count.
+                if (recomp_ios_frontend_frame() && recomp_ios_wants_icons())
+                    observeMenuButton(draw,layout.texcoord_offset,guest_w,guest_h);
                 const bool screenImage = !draw.texture_is_backbuffer &&
                     !draw.texture_is_front_buffer && !draw.four_tap_filter &&
                     (recomp_ios_frontend_frame() || draw.has_texture);

@@ -118,6 +118,7 @@ void guideTouch(float x,float y)
     if (selection < guideRows()) activateGuide();
 }
 }
+#include "ios_icons.inc"
 namespace {
 // Draw the Guide's own button symbols directly, including on first launch.
 void drawButtonBadge(ImDrawList *draw, ImVec2 center, float height, int index, const char *label)
@@ -139,6 +140,7 @@ void drawButtonBadge(ImDrawList *draw, ImVec2 center, float height, int index, c
 }
 void drawGuide(ImVec2 size)
 {
+    loadIcons();
     auto *draw=ImGui::GetForegroundDrawList();
     draw->AddRectFilled({0,0},size,IM_COL32(4,9,16,235));
     float font=size.y*.045f;
@@ -152,16 +154,17 @@ void drawGuide(ImVec2 size)
             const float height = size.y*.053f;
             const float centerY = y + size.y*rowHeight()*.5f;
             const int mapped = settings.binding[i];
-            drawButtonBadge(draw,{size.x*.26f,centerY},height,i,targets[i]);
-            if (waitForButton && selection==i) {
-                draw->AddText(ImGui::GetFont(),font,{size.x*.35f,y+size.y*.008f},
-                    IM_COL32_WHITE,"Press a controller button");
+            if (haveIcons) {
+                const int atlasRow = i == 4 ? 5 : i == 5 ? 4 : i;
+                const float width = height * guideIcons.aspect[atlasRow];
+                drawIcon(draw,atlasRow,{size.x*.26f-width*.5f,centerY-height*.5f},height);
             } else {
-                draw->AddLine({size.x*.31f,centerY},{size.x*.35f,centerY},IM_COL32_WHITE);
-                draw->AddTriangleFilled({size.x*.35f,centerY},
-                    {size.x*.345f,centerY-height*.09f},{size.x*.345f,centerY+height*.09f},IM_COL32_WHITE);
-                drawButtonBadge(draw,{size.x*.40f,centerY},height,mapped,sources[mapped]);
+                drawButtonBadge(draw,{size.x*.26f,centerY},height,i,targets[i]);
             }
+            const char *label = waitForButton && selection==i
+                ? "Press a controller button" : sources[mapped];
+            draw->AddText(ImGui::GetFont(),font,{size.x*.35f,y+size.y*.008f},
+                IM_COL32_WHITE,label);
             continue;
         }
         else if (bindingPage) title=i==8?"Restore defaults":"Back";
