@@ -300,6 +300,17 @@ static void update_pads(void)
     SDL_free(ids);
 }
 
+#if defined(TARGET_OS_IOS) && TARGET_OS_IOS
+SDL_Gamepad *recomp_ios_primary_pad(void)
+{
+    update_pads();
+    return pads[0];
+}
+#ifdef RECOMP_FULL_PROGRAM
+extern void recomp_ios_map_buttons(RecompInputGamepad *pad);
+#endif
+#endif
+
 void recomp_input_host_set_vibration(
     uint32_t port,
     uint16_t left_motor,
@@ -506,7 +517,14 @@ static bool sample(uint32_t port, RecompInputGamepad *gamepad, uint16_t *stick_c
     memset(gamepad, 0, sizeof *gamepad);
     update_pads();
     SDL_Gamepad *host = pads[port];
-    if (host != NULL) read_pad(host, gamepad);
+    if (host != NULL) {
+        read_pad(host, gamepad);
+#if defined(TARGET_OS_IOS) && TARGET_OS_IOS
+#ifdef RECOMP_FULL_PROGRAM
+        if (port == 0u) recomp_ios_map_buttons(gamepad);
+#endif
+#endif
+    }
     /* The keyboard drives port 0 only, so port 0 is always there. */
     if (port != 0u && host == NULL) return false;
     /* Keys first, so the keyboard's Tab (L3) and menu buttons reach the combo hook. */

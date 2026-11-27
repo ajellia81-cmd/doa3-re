@@ -7,6 +7,8 @@
 
 #ifdef RECOMP_IOS_LIFECYCLE
 #include <SDL3/SDL_events.h>
+bool recomp_ios_smooth(bool supported);
+bool recomp_ios_guide_open();
 void recomp_ios_touch_refresh(void);
 void recomp_ios_touch_reset(void);
 void recomp_ios_touch_event(const SDL_Event &event);

@@ -14,6 +14,12 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include <fstream>
+#include <string>
+#include <cstring>
+#include <SDL3/SDL_filesystem.h>
+extern "C" SDL_Gamepad *recomp_ios_primary_pad(void);
+#include "ios_guide.inc"
 extern "C" void recomp_ios_touch_set_pad(const RecompInputGamepad *pad);
 #endif
 
@@ -62,6 +68,7 @@ void drawTouchPad(ImVec2 size)
 {
     touch_aspect = size.x / size.y;
     ImDrawList *draw = ImGui::GetForegroundDrawList();
+    draw->AddText(ImGui::GetFont(), size.y*.032f, {size.x*.46f,size.y*.04f}, IM_COL32_WHITE, "Guide");
     for (const auto &button : buttons) {
         const ImVec2 center(button.x * size.x, button.y * size.y);
         const float radius = touch_radius * size.y;
@@ -132,6 +139,7 @@ void recomp_ios_touch_reset(void)
 
 void recomp_ios_touch_refresh(void)
 {
+    pollGuide(recomp_ios_primary_pad());
     const bool visible = !SDL_HasGamepad();
     if (visible != touch_visible) recomp_ios_touch_reset();
     touch_visible = visible;
@@ -139,8 +147,16 @@ void recomp_ios_touch_refresh(void)
 
 void recomp_ios_touch_event(const SDL_Event &event)
 {
-    if (!touch_visible) return;
     const auto &touch = event.tfinger;
+    if (guideOpen) {
+        if (event.type == SDL_EVENT_FINGER_DOWN) guideTouch(touch.x,touch.y);
+        return;
+    }
+    if (!touch_visible) return;
+    if (event.type == SDL_EVENT_FINGER_DOWN && touch.x>.43f && touch.x<.57f && touch.y<.11f) {
+        openGuide(true);
+        return;
+    }
     const auto finger = std::find_if(fingers.begin(), fingers.end(), [&](const Finger &entry) {
         return entry.device == touch.touchID && entry.id == touch.fingerID;
     });
@@ -162,7 +178,7 @@ void recomp_overlay_sdl_gpu_draw(SDL_GPUDevice *device, SDL_Window *window,
 {
     bool show_touch = false;
 #ifdef RECOMP_IOS_LIFECYCLE
-    show_touch = touch_visible;
+    show_touch = touch_visible || guideOpen;
 #endif
     if (device == nullptr || window == nullptr || command_buffer == nullptr || target == nullptr ||
         width == 0u || height == 0u || (!show_touch && recomp_overlay_empty(text))) {
@@ -183,7 +199,8 @@ void recomp_overlay_sdl_gpu_draw(SDL_GPUDevice *device, SDL_Window *window,
         recomp_overlay_imgui_build(*text, io.DisplaySize.x, io.DisplaySize.y);
     }
 #ifdef RECOMP_IOS_LIFECYCLE
-    if (show_touch) drawTouchPad(io.DisplaySize);
+    if (guideOpen) drawGuide(io.DisplaySize);
+    else if (show_touch) drawTouchPad(io.DisplaySize);
 #endif
     ImGui::Render();
     ImDrawData *draw_data = ImGui::GetDrawData();

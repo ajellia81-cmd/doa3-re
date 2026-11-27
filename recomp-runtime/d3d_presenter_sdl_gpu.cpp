@@ -461,7 +461,7 @@ struct RecompD3dPresenter {
     SDL_GPUDevice *device = nullptr;
     SDL_GPUTexture *backbuffer_color = nullptr;
     SDL_GPUTexture *midColor = nullptr, *midDepth = nullptr;
-    bool midEnabled = false, midReady = false;
+    bool midCapable = false, midEnabled = false, midReady = false;
     uint32_t midWidth = 0, midHeight = 0;
     std::vector<PoseSample> previousPose, currentPose;
     SDL_GPUTexture *backbuffer_depth = nullptr;
@@ -628,7 +628,7 @@ void setSuspended(RecompD3dPresenter *presenter, bool suspended)
         recomp_input_keyboard_reset();
         recomp_ios_touch_reset();
     }
-    recomp_audio_output_set_suspended(suspended);
+    recomp_audio_output_set_suspended(suspended || recomp_ios_guide_open());
 }
 
 void syncUIKitActivity(RecompD3dPresenter *presenter)
@@ -3481,8 +3481,9 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     auto sendObject = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend);
     auto sendInt = reinterpret_cast<intptr_t (*)(id, SEL)>(objc_msgSend);
     id screen = sendObject((id)objc_getClass("UIScreen"), sel_registerName("mainScreen"));
-    p->midEnabled = screen && sendInt(screen, sel_registerName("maximumFramesPerSecond")) >= 120 &&
+    p->midCapable = screen && sendInt(screen, sel_registerName("maximumFramesPerSecond")) >= 120 &&
         msaa_count == 1 && !SDL_GetHintBoolean("DOA3_DISABLE_SMOOTH_MOTION", false);
+    p->midEnabled = recomp_ios_smooth(p->midCapable);
 #endif
     p->msaa_count = msaa_count;
     p->msaa_samples = sample_count;
@@ -3746,6 +3747,24 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             }
         }
 
+        #ifdef RECOMP_IOS_LIFECYCLE
+        if (phase == 1 && recomp_ios_guide_open()) {
+            recomp_audio_output_set_suspended(true);
+            SDL_SubmitGPUCommandBuffer(cmdbuf);
+            presenter->current_command_buffer = nullptr;
+            do {
+                SDL_Delay(16);
+                pumpEvents(presenter);
+            } while (presenter->suspended && !presenter->close_requested);
+            if (presenter->close_requested) return RECOMP_D3D_PRESENTER_CLOSED;
+            if (!recomp_ios_guide_open()) recomp_audio_output_set_suspended(false);
+            cmdbuf = getCommandBuffer(presenter);
+            phase = 0;
+            continue;
+        }
+        presenter->midEnabled = recomp_ios_smooth(presenter->midCapable);
+        if (!presenter->midEnabled) presenter->midReady = false;
+#endif
         if (phase == 0) {
             SDL_SubmitGPUCommandBuffer(cmdbuf);
             presenter->current_command_buffer = nullptr;
