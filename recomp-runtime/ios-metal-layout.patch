@@ -21,7 +21,7 @@
  // Set the size of the metal drawables when the view is resized.
 --- a/src/gpu/metal/SDL_gpu_metal.m
 +++ b/src/gpu/metal/SDL_gpu_metal.m
-@@ -3924,7 +3924,18 @@
+@@ -3924,7 +3924,20 @@
          }
  
          // Get the drawable and its underlying texture
@@ -35,8 +35,10 @@
 +#endif
          windowData->drawable = [windowData->layer nextDrawable];
 +        if (!windowData->drawable) return true;
-+        if (swapchainTextureWidth) *swapchainTextureWidth = (Uint32)windowData->drawable.texture.width;
-+        if (swapchainTextureHeight) *swapchainTextureHeight = (Uint32)windowData->drawable.texture.height;
++        windowData->textureContainer.header.info.width = (Uint32)windowData->drawable.texture.width;
++        windowData->textureContainer.header.info.height = (Uint32)windowData->drawable.texture.height;
++        if (swapchainTextureWidth) *swapchainTextureWidth = windowData->textureContainer.header.info.width;
++        if (swapchainTextureHeight) *swapchainTextureHeight = windowData->textureContainer.header.info.height;
          windowData->texture.handle = [windowData->drawable texture];
  
          // Set up presentation
