@@ -4,8 +4,7 @@ namespace {
 constexpr int iconSide=32;
 using IconPixels=std::array<uint32_t,iconSide*iconSide>;
 struct GuideIcons { std::array<IconPixels,8> pixels{}; std::array<float,8> aspect{}; };
-GuideIcons candidateIcons,guideIcons;
-unsigned observedRows;
+GuideIcons guideIcons;
 bool haveIcons;
 void loadIcons() {
     static bool tried;
@@ -13,7 +12,7 @@ void loadIcons() {
     tried=true;
     const auto path=settingsFile();
     if (path.empty()) return;
-    std::ifstream in(path+".button-icons-v3",std::ios::binary);
+    std::ifstream in(path+".button-icons-v4",std::ios::binary);
     GuideIcons saved;
     if (!in.read(reinterpret_cast<char*>(&saved),sizeof saved)) return;
     for(float a:saved.aspect) if (!(a>=.4f && a<=2.1f)) return;
@@ -38,46 +37,59 @@ bool recomp_ios_wants_icons()
     loadIcons();
     return !haveIcons;
 }
-void recomp_ios_observe_icon(int row,const RecompD3dPresenterDrawCommand &draw,int left,int top,int w,int h)
+// Validate four aligned face buttons before adopting any image from a frame.
+void recomp_ios_read_button_strip(const uint8_t *bgra, unsigned width, unsigned height,
+    unsigned top, unsigned frameHeight)
 {
-    loadIcons();
-    if(haveIcons || w<=0 || h<=0 || left<0 || top<0 ||
-        left+w>int(draw.texture.width) || top+h>int(draw.texture.height)) return;
-    const auto *texture = static_cast<const uint8_t *>(draw.texture_bytes);
-    const bool indexed = draw.texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_P8;
-    const bool alpha = draw.texture.format_byte != 0x07u;
-    unsigned mx,my,matched=0;
-    recomp_d3d_texture_swizzle_masks(draw.texture.width,draw.texture.height,&mx,&my);
-    auto &pixels=candidateIcons.pixels[row];
-    for(int y=0;y<iconSide;++y) for(int x=0;x<iconSide;++x) {
-        const unsigned sx=left+x*w/iconSide, sy=top+y*h/iconSide;
-        const unsigned texel=recomp_d3d_texture_swizzle_offset(sx,sy,mx,my);
-        const unsigned offset=draw.texture.linear ? sy*draw.texture.pitch+sx*4 : texel*(indexed?1:4);
-        if (offset+(indexed?1:4)>draw.texture_byte_count) return;
-        const auto *p=indexed ? static_cast<const uint8_t*>(draw.palette_bytes)+texture[offset]*4
-                              : texture+offset;
-        const unsigned opacity=alpha?p[3]:255;
-        pixels[y*iconSide+x]=IM_COL32(p[2],p[1],p[0],opacity);
-        if(opacity>100 && ((row==0 && p[1]>p[0]+25 && p[1]>p[2]+8) ||
-            (row==1 && p[2]>p[1]+30) || (row==2 && p[0]>p[2]+25) ||
-            (row==3 && p[2]>p[0]+30 && p[1]>p[0]+25))) ++matched;
+    if (haveIcons || !bgra || width<16 || height<16) return;
+    const unsigned radius = std::max(1u,frameHeight/65);
+    const unsigned halfHeight = std::max(1u,frameHeight/46);
+    const auto pixel = [=](unsigned x,unsigned y) { return bgra+4*(y*width+x); };
+    const auto rowY = [=](unsigned row) {
+        return int(std::lround((.190+.071*row)*frameHeight))-int(top);
+    };
+    if (rowY(0)<int(halfHeight) || rowY(7)+int(halfHeight)>=int(height)) return;
+
+    unsigned bestScore=0, centerX=0;
+    for (unsigned x=radius; x+radius<width; x+=2) {
+        unsigned score=0;
+        bool valid=true;
+        for (unsigned row=0; row<4; ++row) {
+            unsigned matches=0;
+            for (int y=rowY(row)-int(radius); y<=rowY(row)+int(radius); y+=3) {
+                for (unsigned sx=x-radius; sx<=x+radius; sx+=3) {
+                    auto p=pixel(sx,y);
+                    int b=p[0],g=p[1],r=p[2];
+                    const bool colors[] = {g>b+37 && g>r+3, r>g+43 && r>b+43,
+                        b>r+40 && b>g+13, r>b+50 && g>b+33 && r<g+65};
+                    matches+=colors[row];
+                }
+            }
+            if (matches<(radius*radius)/16) { valid=false; break; }
+            score+=matches;
+        }
+        if (valid && score>bestScore) { bestScore=score; centerX=x; }
     }
-    if (row<4 && matched<28) return;
-    candidateIcons.aspect[row]=float(w)/h;
-    observedRows |= 1u<<row;
-}
-void recomp_ios_finish_icons() {
-    if(!haveIcons && observedRows==255) {
-        guideIcons=candidateIcons;
-        haveIcons=true;
-        const auto path=settingsFile();
-        if(!path.empty()) {
-            const auto tmp=path+".icons.tmp";
-            std::ofstream out(tmp,std::ios::binary);
-            out.write(reinterpret_cast<const char*>(&guideIcons),sizeof guideIcons);
-            out.close();
-            if(out) std::rename(tmp.c_str(),(path+".button-icons-v3").c_str());
+    const unsigned halfWidth = halfHeight;
+    if (!bestScore || centerX<halfWidth || centerX+halfWidth>=width) return;
+    for (unsigned row=0; row<8; ++row) {
+        guideIcons.aspect[row]=1.0f;
+        auto &icon = guideIcons.pixels[row];
+        for (int y=0; y<iconSide; ++y) {
+            for (int x=0; x<iconSide; ++x) {
+                const unsigned srcX=centerX-halfWidth+x*2*halfWidth/iconSide;
+                const unsigned srcY=rowY(row)-halfHeight+y*2*halfHeight/iconSide;
+                auto p=pixel(srcX,srcY);
+                icon[y*iconSide+x]=IM_COL32(p[2],p[1],p[0],255);
+            }
         }
     }
-    observedRows=0;
+    haveIcons=true;
+    const auto path=settingsFile();
+    if (path.empty()) return;
+    const auto temp=path+".icons.tmp";
+    std::ofstream out(temp,std::ios::binary);
+    out.write(reinterpret_cast<const char*>(&guideIcons),sizeof guideIcons);
+    out.close();
+    if (out) std::rename(temp.c_str(),(path+".button-icons-v4").c_str());
 }

@@ -12,6 +12,9 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#ifdef RECOMP_IOS_LIFECYCLE
+#include <mutex>
+#endif
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -20,6 +23,11 @@ std::atomic<uint64_t> skipped_ns{0};
 std::atomic<uint64_t> virtual_ns{0};
 Clock::time_point pace_target;
 bool pace_started;
+#ifdef RECOMP_IOS_LIFECYCLE
+std::mutex guestPauseMutex;
+Clock::time_point guestPausedAt{};
+Clock::duration guestPauseTotal{};
+#endif
 
 // Host pacing only: never feeds back into guest time.
 void pace(uint64_t advance_ns)
@@ -54,15 +62,34 @@ bool (*recomp_xapi_fast_forward)(void) = nullptr;
 bool recomp_xapi_deterministic = false;
 uint64_t recomp_xapi_clock_reads;
 
+#ifdef RECOMP_IOS_LIFECYCLE
+void recomp_xapi_set_guide_paused(bool paused)
+{
+    std::lock_guard<std::mutex> lock(guestPauseMutex);
+    const auto now = Clock::now();
+    if (paused && guestPausedAt == Clock::time_point{}) guestPausedAt = now;
+    else if (!paused && guestPausedAt != Clock::time_point{}) {
+        guestPauseTotal += now - guestPausedAt;
+        guestPausedAt = {};
+    }
+}
+#endif
+
 uint64_t recomp_xapi_performance_counter(void)
 {
     if (recomp_xapi_deterministic) {
         ++recomp_xapi_clock_reads;
         return virtual_ns.load(std::memory_order_relaxed);
     }
+#ifdef RECOMP_IOS_LIFECYCLE
+    std::lock_guard<std::mutex> lock(guestPauseMutex);
+    const auto now = (guestPausedAt == Clock::time_point{} ? Clock::now() : guestPausedAt) - guestPauseTotal;
+#else
+    const auto now = Clock::now();
+#endif
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
-            Clock::now().time_since_epoch()).count()) +
+            now.time_since_epoch()).count()) +
         skipped_ns.load(std::memory_order_relaxed);
 }
 

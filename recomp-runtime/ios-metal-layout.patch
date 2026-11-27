@@ -82,3 +82,19 @@
          windowData->texture.handle = [windowData->drawable texture];
  
          // Set up presentation
+@@ -4074,7 +4087,14 @@
+         // Enqueue present requests, if applicable
+         for (Uint32 i = 0; i < metalCommandBuffer->windowDataCount; i += 1) {
+             MetalWindowData *windowData = metalCommandBuffer->windowDatas[i];
++#if defined(SDL_PLATFORM_IOS)
++            if (SDL_GetHintBoolean("DOA3_IOS_SMOOTH_REFRESH", false)) {
++                [metalCommandBuffer->handle presentDrawable:windowData->drawable afterMinimumDuration:1.0 / 120.0];
++            } else
++#endif
++            {
++                [metalCommandBuffer->handle presentDrawable:windowData->drawable];
++            }
+-            [metalCommandBuffer->handle presentDrawable:windowData->drawable];
+             windowData->drawable = nil;
+ 
+             windowData->inFlightFences[windowData->frameCounter] = (SDL_GPUFence *)metalCommandBuffer->fence;

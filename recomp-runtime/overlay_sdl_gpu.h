@@ -6,11 +6,9 @@
 #include "overlay_text.h"
 
 #ifdef RECOMP_IOS_LIFECYCLE
-struct RecompD3dPresenterDrawCommand;
 bool recomp_ios_wants_icons();
-void recomp_ios_observe_icon(int row, const RecompD3dPresenterDrawCommand &draw,
-    int left, int top, int width, int height);
-void recomp_ios_finish_icons();
+void recomp_ios_read_button_strip(const uint8_t *bgra, unsigned width, unsigned height,
+    unsigned top, unsigned frameHeight);
 #include <SDL3/SDL_events.h>
 bool recomp_ios_smooth(bool supported);
 bool recomp_ios_guide_open();

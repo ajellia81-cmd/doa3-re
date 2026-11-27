@@ -165,7 +165,9 @@ static uint64_t buffer_now_ms(void)
 #else
     /* Replays need guest-visible cursors to follow guest time alone. */
     if (recomp_xapi_deterministic) return recomp_xapi_performance_counter() / 1000000u;
-#ifdef _WIN32
+#ifdef RECOMP_IOS_APP
+    return recomp_xapi_performance_counter() / 1000000u;
+#elif defined(_WIN32)
     return GetTickCount64();
 #else
     /* Monotonic: a wall-clock step would jump or freeze the buffer cursors. */

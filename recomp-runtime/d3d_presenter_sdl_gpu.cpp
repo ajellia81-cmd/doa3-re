@@ -15,6 +15,7 @@
 #include <objc/runtime.h>
 
 extern "C" void recomp_audio_output_set_suspended(bool suspended);
+extern "C" void recomp_xapi_set_guide_paused(bool paused);
 extern "C" bool recomp_ios_frontend_frame(void);
 #endif
 
@@ -462,6 +463,15 @@ struct RecompD3dPresenter {
     SDL_GPUTexture *midColor = nullptr, *midDepth = nullptr;
     bool midCapable = false, midEnabled = false, midReady = false;
     bool submittedMidpoint = false;
+    unsigned lateSmoothFrames = 0;
+    bool guideClockPaused = false;
+#ifdef RECOMP_IOS_LIFECYCLE
+    SDL_GPUTransferBuffer *buttonStrip = nullptr;
+    SDL_GPUFence *buttonStripFence = nullptr;
+    Uint64 nextButtonStrip = 0;
+    unsigned buttonStripWidth = 0, buttonStripHeight = 0;
+    unsigned buttonStripTop = 0, buttonStripFrameHeight = 0;
+#endif
     Uint64 lastGuestPresent = 0, skipMidpointsUntil = 0;
     uint32_t midWidth = 0, midHeight = 0;
     std::vector<PoseSample> previousPose, currentPose;
@@ -596,62 +606,6 @@ float iosUiCanvasFraction(const RecompD3dPresenter *presenter)
     return std::min(1.0f, iosUiAspect * presenter->aspect_h / presenter->aspect_w);
 }
 
-// Observe the controller settings atlas in guest coordinates, independent
-// of the projection applied to the rest of the UI.
-void observeMenuButton(const RecompD3dPresenterDrawCommand &draw, unsigned uvOffset,
-    float guestWidth, float guestHeight)
-{
-    const auto &texture = draw.texture;
-    const bool indexed = texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_P8 &&
-        !texture.linear && draw.palette_bytes && draw.palette_byte_count >= 1024;
-    const bool direct = texture.format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8R8G8B8 ||
-        texture.format_byte == 0x07u || (texture.linear && texture.format_byte == 0x12u);
-    if (!draw.has_texture || draw.texture_is_backbuffer || !draw.texture_bytes ||
-        (!indexed && !direct) || draw.vertex_count < 4 || draw.vertex_count > 6 ||
-        uvOffset == RECOMP_D3D_FVF_ABSENT || uvOffset + 8 > draw.vertex_stride) return;
-
-    float x0=INFINITY, y0=INFINITY, x1=-INFINITY, y1=-INFINITY;
-    float u0=INFINITY, v0=INFINITY, u1=-INFINITY, v1=-INFINITY;
-    const auto *vertices = static_cast<const uint8_t *>(draw.vertex_bytes);
-    for (unsigned i=0; i<draw.vertex_count; ++i) {
-        float xy[2], uv[2];
-        std::memcpy(xy,vertices+i*draw.vertex_stride,8);
-        std::memcpy(uv,vertices+i*draw.vertex_stride+uvOffset,8);
-        if (!std::isfinite(xy[0]) || !std::isfinite(xy[1]) ||
-            !std::isfinite(uv[0]) || !std::isfinite(uv[1])) return;
-        x0=std::min(x0,xy[0]); x1=std::max(x1,xy[0]);
-        y0=std::min(y0,xy[1]); y1=std::max(y1,xy[1]);
-        u0=std::min(u0,uv[0]); u1=std::max(u1,uv[0]);
-        v0=std::min(v0,uv[1]); v1=std::max(v1,uv[1]);
-    }
-
-    // Calibrated against the retail Button Config grid. The x coordinate is
-    // mapped back from the former 4:3 menu transform to guest layout units.
-    constexpr float iconX = .71f;
-    constexpr float firstRow = .189f;
-    constexpr float rowSpacing = .071f;
-    const float centerY = (y0+y1)*.5f/guestHeight;
-    if (centerY < .16f || centerY > .72f) return;
-    const int row = int(std::lround((centerY-firstRow)/rowSpacing));
-    if (row<0 || row>=8 || std::abs(centerY-firstRow-row*rowSpacing)>.018f) return;
-    const float width = (x1-x0)/guestWidth, height = (y1-y0)/guestHeight;
-    if (width<=0.f || width>.35f || height<.02f || height>.09f) return;
-    const float anchor = (iconX-x0/guestWidth)/width;
-    if (anchor<0.f || anchor>1.f) return;
-    if (width > .085f) {
-        // The icon shares the left edge of the action strip.
-        if (anchor>.30f) return;
-        const float halfWidth = .018f / width;
-        const float left = u0 + (u1-u0)*std::max(0.f,anchor-halfWidth);
-        const float right = u0 + (u1-u0)*std::min(1.f,anchor+halfWidth);
-        u0=left; u1=right;
-    }
-    const float uScale=texture.linear?1.f:float(texture.width);
-    const float vScale=texture.linear?1.f:float(texture.height);
-    if (u0<0 || v0<0 || u1*uScale>texture.width || v1*vScale>texture.height) return;
-    recomp_ios_observe_icon(row,draw,int(std::lround(u0*uScale)),int(std::lround(v0*vScale)),
-        int(std::lround((u1-u0)*uScale)),int(std::lround((v1-v0)*vScale)));
-}
 #endif
 
 namespace {
@@ -3360,6 +3314,10 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
         win_flags |= SDL_WINDOW_FULLSCREEN;
     }
 
+#ifdef RECOMP_IOS_LIFECYCLE
+    // A 60 Hz guest submits two drawables per tick in Smooth Motion.
+    SDL_SetGPUAllowedFramesInFlight(device, 3);
+#endif
     SDL_Window *window = SDL_CreateWindow(
         "DOA3 Recomp", win_w, win_h, win_flags);
     if (!window || !SDL_ClaimWindowForGPUDevice(device, window)) {
@@ -3722,7 +3680,18 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         }
 
 #ifdef RECOMP_IOS_LIFECYCLE
-        recomp_ios_finish_icons();
+        if (presenter->buttonStripFence && SDL_QueryGPUFence(presenter->device,presenter->buttonStripFence)) {
+            SDL_ReleaseGPUFence(presenter->device,presenter->buttonStripFence);
+            presenter->buttonStripFence = nullptr;
+            if (auto *pixels = SDL_MapGPUTransferBuffer(presenter->device,presenter->buttonStrip,false)) {
+                recomp_ios_read_button_strip(static_cast<const uint8_t *>(pixels),
+                    presenter->buttonStripWidth,presenter->buttonStripHeight,
+                    presenter->buttonStripTop,presenter->buttonStripFrameHeight);
+                SDL_UnmapGPUTransferBuffer(presenter->device,presenter->buttonStrip);
+            }
+            SDL_ReleaseGPUTransferBuffer(presenter->device,presenter->buttonStrip);
+            presenter->buttonStrip = nullptr;
+        }
 #endif
         const Uint64 presentStart = SDL_GetTicksNS();
         constexpr Uint64 slowGuestFrame = 21000000;
@@ -3730,7 +3699,12 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         if (presenter->submittedMidpoint && presenter->lastGuestPresent &&
             presentStart - presenter->lastGuestPresent > slowGuestFrame &&
             presentStart >= presenter->skipMidpointsUntil) {
-            presenter->skipMidpointsUntil = presentStart + retryDelay;
+            if (++presenter->lateSmoothFrames >= 3) {
+                presenter->skipMidpointsUntil = presentStart + retryDelay;
+                presenter->lateSmoothFrames = 0;
+            }
+        } else {
+            presenter->lateSmoothFrames = 0;
         }
         presenter->lastGuestPresent = presentStart;
         presenter->submittedMidpoint = false;
@@ -3834,15 +3808,26 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
 
         #ifdef RECOMP_IOS_LIFECYCLE
         if (phase == 1 && recomp_ios_guide_open()) {
-            recomp_audio_output_set_suspended(true);
+            if (!presenter->guideClockPaused) {
+                recomp_xapi_set_guide_paused(true);
+                recomp_audio_output_set_suspended(true);
+                presenter->guideClockPaused = true;
+            }
             SDL_SubmitGPUCommandBuffer(cmdbuf);
             presenter->current_command_buffer = nullptr;
             do {
                 SDL_Delay(16);
                 pumpEvents(presenter);
             } while (presenter->suspended && !presenter->close_requested);
-            if (presenter->close_requested) return RECOMP_D3D_PRESENTER_CLOSED;
-            if (!recomp_ios_guide_open()) recomp_audio_output_set_suspended(false);
+            if (presenter->close_requested) {
+                recomp_xapi_set_guide_paused(false);
+                return RECOMP_D3D_PRESENTER_CLOSED;
+            }
+            if (!recomp_ios_guide_open()) {
+                recomp_audio_output_set_suspended(false);
+                recomp_xapi_set_guide_paused(false);
+                presenter->guideClockPaused = false;
+            }
             cmdbuf = getCommandBuffer(presenter);
             phase = 0;
             continue;
@@ -3854,8 +3839,6 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
 #endif
         if (phase == 0) {
             presenter->submittedMidpoint = swapchain_tex != nullptr;
-            if (SDL_GetTicksNS() - presentStart > 10000000)
-                presenter->skipMidpointsUntil = presentStart + retryDelay;
             SDL_SubmitGPUCommandBuffer(cmdbuf);
             presenter->current_command_buffer = nullptr;
             cmdbuf = getCommandBuffer(presenter);
@@ -3913,6 +3896,39 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             SDL_ReleaseGPUTransferBuffer(presenter->device, dump);
         } else if (recomp_screenshot_take_request()) {
             saveScreenshot(presenter, cmdbuf, shown);
+#ifdef RECOMP_IOS_LIFECYCLE
+        } else if (!presenter->buttonStripFence && presentStart >= presenter->nextButtonStrip &&
+            recomp_ios_frontend_frame() && recomp_ios_wants_icons()) {
+            // Sample the finished menu regardless of the source texture format
+            // or whether the game batches the buttons with other sprites.
+            presenter->nextButtonStrip = presentStart + 850000000;
+            const float canvasWidth = mainWidth(presenter)*iosUiCanvasFraction(presenter);
+            const unsigned left = unsigned((mainWidth(presenter)-canvasWidth)*.5f + canvasWidth*.57f);
+            const unsigned width = unsigned(canvasWidth*.23f);
+            const unsigned fullHeight = mainHeight(presenter);
+            const unsigned top = unsigned(fullHeight*.15f);
+            const unsigned height = unsigned(fullHeight*.57f);
+            SDL_GPUTransferBufferCreateInfo info{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,width*height*4,0};
+            presenter->buttonStrip = SDL_CreateGPUTransferBuffer(presenter->device,&info);
+            SDL_GPUCopyPass *pass = presenter->buttonStrip ? SDL_BeginGPUCopyPass(cmdbuf) : nullptr;
+            if (pass) {
+                const SDL_GPUTextureRegion region{presenter->backbuffer_resolve,0,0,left,top,0,width,height,1};
+                const SDL_GPUTextureTransferInfo destination{presenter->buttonStrip,0,width,height};
+                SDL_DownloadFromGPUTexture(pass,&region,&destination);
+                SDL_EndGPUCopyPass(pass);
+                presenter->buttonStripWidth = width;
+                presenter->buttonStripHeight = height;
+                presenter->buttonStripTop = top;
+                presenter->buttonStripFrameHeight = fullHeight;
+                presenter->buttonStripFence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmdbuf);
+            } else {
+                SDL_SubmitGPUCommandBuffer(cmdbuf);
+            }
+            if (!presenter->buttonStripFence && presenter->buttonStrip) {
+                SDL_ReleaseGPUTransferBuffer(presenter->device,presenter->buttonStrip);
+                presenter->buttonStrip = nullptr;
+            }
+#endif
         } else {
             SDL_SubmitGPUCommandBuffer(cmdbuf);
         }
@@ -4127,8 +4143,6 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 // A frontend sprite is already laid out in guest screen
                 // coordinates. Apply the canvas transform exactly once,
                 // regardless of its position, texture or primitive count.
-                if (recomp_ios_frontend_frame() && recomp_ios_wants_icons())
-                    observeMenuButton(draw,layout.texcoord_offset,guest_w,guest_h);
                 const bool screenImage = !draw.texture_is_backbuffer &&
                     !draw.texture_is_front_buffer && !draw.four_tap_filter &&
                     (recomp_ios_frontend_frame() || draw.has_texture);
@@ -4542,6 +4556,10 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(
     if (p->midDepth) SDL_ReleaseGPUTexture(p->device,p->midDepth);
     if (p->backbuffer_color) SDL_ReleaseGPUTexture(p->device, p->backbuffer_color);
     if (p->backbuffer_depth) SDL_ReleaseGPUTexture(p->device, p->backbuffer_depth);
+#ifdef RECOMP_IOS_LIFECYCLE
+    if (p->buttonStripFence) SDL_ReleaseGPUFence(p->device,p->buttonStripFence);
+    if (p->buttonStrip) SDL_ReleaseGPUTransferBuffer(p->device,p->buttonStrip);
+#endif
     if (p->backbuffer_resolve && p->backbuffer_resolve != p->backbuffer_color) SDL_ReleaseGPUTexture(p->device, p->backbuffer_resolve);
     if (p->backbuffer_copy) SDL_ReleaseGPUTexture(p->device, p->backbuffer_copy);
     if (p->frontbuffer_copy) SDL_ReleaseGPUTexture(p->device, p->frontbuffer_copy);
