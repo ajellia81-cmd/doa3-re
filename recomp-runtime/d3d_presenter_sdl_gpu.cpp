@@ -462,6 +462,8 @@ struct RecompD3dPresenter {
     SDL_GPUTexture *backbuffer_color = nullptr;
     SDL_GPUTexture *midColor = nullptr, *midDepth = nullptr;
     bool midCapable = false, midEnabled = false, midReady = false;
+    bool submittedMidpoint = false;
+    Uint64 lastGuestPresent = 0, skipMidpointsUntil = 0;
     uint32_t midWidth = 0, midHeight = 0;
     std::vector<PoseSample> previousPose, currentPose;
     SDL_GPUTexture *backbuffer_depth = nullptr;
@@ -3639,9 +3641,6 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
         }
 
-#ifdef RECOMP_IOS_LIFECYCLE
-        recomp_ios_finish_icons();
-#endif
         flushSegment(presenter);
         ensureBackbufferResolved(presenter);
 
@@ -3658,9 +3657,20 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             return RECOMP_D3D_PRESENTER_CLOSED;
         }
 
+        const Uint64 presentStart = SDL_GetTicksNS();
+        constexpr Uint64 slowGuestFrame = 21000000;
+        constexpr Uint64 retryDelay = 2000000000;
+        if (presenter->submittedMidpoint && presenter->lastGuestPresent &&
+            presentStart - presenter->lastGuestPresent > slowGuestFrame &&
+            presentStart >= presenter->skipMidpointsUntil) {
+            presenter->skipMidpointsUntil = presentStart + retryDelay;
+        }
+        presenter->lastGuestPresent = presentStart;
+        presenter->submittedMidpoint = false;
         SDL_GPUCommandBuffer *cmdbuf = getCommandBuffer(presenter);
         SDL_GPUTexture *shown = nullptr;
-        for (int phase = presenter->midReady && !presenter->previousPose.empty() ? 0 : 1; phase <= 1; ++phase) {
+        for (int phase = presenter->midReady && !presenter->previousPose.empty() &&
+            presentStart >= presenter->skipMidpointsUntil ? 0 : 1; phase <= 1; ++phase) {
         SDL_GPUTexture *frame = phase == 0 ? presenter->midColor : presenter->backbuffer_resolve;
         shown = frame;
         if (presenter->gamma_enabled) {
@@ -3680,8 +3690,9 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         }
         SDL_GPUTexture *swapchain_tex = nullptr;
         Uint32 swap_w = 0, swap_h = 0;
-        if (SDL_WaitAndAcquireGPUSwapchainTexture(
-                cmdbuf, presenter->window, &swapchain_tex, &swap_w, &swap_h)) {
+        const auto acquire = phase == 0 ? SDL_AcquireGPUSwapchainTexture :
+                                          SDL_WaitAndAcquireGPUSwapchainTexture;
+        if (acquire(cmdbuf, presenter->window, &swapchain_tex, &swap_w, &swap_h)) {
             if (swapchain_tex && swap_w > 0 && swap_h > 0) {
                 SDL_GPUBlitInfo blit{};
                 blit.destination.texture = swapchain_tex;
@@ -3770,10 +3781,14 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             phase = 0;
             continue;
         }
-        presenter->midEnabled = recomp_ios_smooth(presenter->midCapable);
+        presenter->midEnabled = recomp_ios_smooth(presenter->midCapable) &&
+            SDL_GetTicksNS() >= presenter->skipMidpointsUntil;
         if (!presenter->midEnabled) presenter->midReady = false;
 #endif
         if (phase == 0) {
+            presenter->submittedMidpoint = swapchain_tex != nullptr;
+            if (SDL_GetTicksNS() - presentStart > 10000000)
+                presenter->skipMidpointsUntil = presentStart + retryDelay;
             SDL_SubmitGPUCommandBuffer(cmdbuf);
             presenter->current_command_buffer = nullptr;
             cmdbuf = getCommandBuffer(presenter);

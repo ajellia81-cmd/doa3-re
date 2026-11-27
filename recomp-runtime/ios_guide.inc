@@ -9,8 +9,8 @@ GuideSettings settings;
 bool loaded, guideOpen, bindingPage, waitForButton, highRefresh;
 int selection;
 unsigned lastKeys, suppress;
-const char *const targets[] = {"A","B","X","Y","Black","White","L trigger","R trigger"};
-const char *const sources[] = {"South","East","West","North","RB","LB","LT","RT"};
+const char *const targets[] = {"A","B","X","Y","BK","WH","LT","RT"};
+const char *const sources[] = {"A","B","X","Y","RB","LB","LT","RT"};
 
 std::string settingsFile()
 {
@@ -118,8 +118,25 @@ void guideTouch(float x,float y)
     if (selection < guideRows()) activateGuide();
 }
 }
-#include "ios_icons.inc"
 namespace {
+// Draw the Guide's own button symbols directly, including on first launch.
+void drawButtonBadge(ImDrawList *draw, ImVec2 center, float height, int index, const char *label)
+{
+    constexpr ImU32 colors[] = {
+        IM_COL32(114,228,169,255), IM_COL32(255,157,167,255),
+        IM_COL32(131,199,255,255), IM_COL32(255,221,135,255)
+    };
+    const ImU32 tint = index < 4 ? colors[index] : IM_COL32(218,227,240,255);
+    const float halfWidth = height * (index < 4 ? .5f : .83f);
+    const ImVec2 lo(center.x-halfWidth,center.y-height*.5f);
+    const ImVec2 hi(center.x+halfWidth,center.y+height*.5f);
+    draw->AddRectFilled(lo,hi,IM_COL32(13,26,43,255),height*.22f);
+    draw->AddRect(lo,hi,tint,height*.22f,0,height*.045f);
+    const float fontSize = height*.61f;
+    auto *font = ImGui::GetFont();
+    const ImVec2 textSize = font->CalcTextSizeA(fontSize,1000.f,0.f,label);
+    draw->AddText(font,fontSize,{center.x-textSize.x*.5f,center.y-textSize.y*.5f},tint,label);
+}
 void drawGuide(ImVec2 size)
 {
     auto *draw=ImGui::GetForegroundDrawList();
@@ -131,21 +148,27 @@ void drawGuide(ImVec2 size)
         float y=size.y*(.18f+rowHeight()*i);
         if (selection==i) draw->AddRectFilled({size.x*.22f,y},{size.x*.78f,y+size.y*rowHeight()},IM_COL32(33,69,108,255));
         std::string title;
-        if (bindingPage && i<8)
-            title=std::string(targets[i])+"     "+((waitForButton && selection==i)?"Press a controller button":sources[settings.binding[i]]);
+        if (bindingPage && i<8) {
+            const float height = size.y*.053f;
+            const float centerY = y + size.y*rowHeight()*.5f;
+            const int mapped = settings.binding[i];
+            drawButtonBadge(draw,{size.x*.26f,centerY},height,i,targets[i]);
+            if (waitForButton && selection==i) {
+                draw->AddText(ImGui::GetFont(),font,{size.x*.35f,y+size.y*.008f},
+                    IM_COL32_WHITE,"Press a controller button");
+            } else {
+                draw->AddLine({size.x*.31f,centerY},{size.x*.35f,centerY},IM_COL32_WHITE);
+                draw->AddTriangleFilled({size.x*.35f,centerY},
+                    {size.x*.345f,centerY-height*.09f},{size.x*.345f,centerY+height*.09f},IM_COL32_WHITE);
+                drawButtonBadge(draw,{size.x*.40f,centerY},height,mapped,sources[mapped]);
+            }
+            continue;
+        }
         else if (bindingPage) title=i==8?"Restore defaults":"Back";
         else if (i==0) title=std::string("Smooth Motion 120 fps     ")+(highRefresh?(settings.smooth?"On":"Off"):"Unavailable");
         else if (i==1) title=std::string("Show FPS     ")+(settings.fps?"On":"Off");
         else title=i==2?"Button mapping":"Resume game";
-        float labelX=size.x*.24f;
-        if (bindingPage && i<8) {
-            loadIcons();
-            if (haveIcons) {
-                const int row=i==4?5:i==5?4:i;
-                drawIcon(draw,row,{labelX,y+size.y*.006f},size.y*.052f);
-                labelX+=size.x*.06f;
-            }
-        }
+        const float labelX=size.x*.24f;
         draw->AddText(ImGui::GetFont(),font,{labelX,y+size.y*.008f},IM_COL32_WHITE,title.c_str());
     }
 }

@@ -7,9 +7,6 @@
 
 #ifdef RECOMP_IOS_LIFECYCLE
 #include <SDL3/SDL_events.h>
-struct RecompD3dPresenterDrawCommand;
-void recomp_ios_observe_icon(int row,const RecompD3dPresenterDrawCommand &draw,int left,int top,int w,int h);
-void recomp_ios_finish_icons();
 bool recomp_ios_smooth(bool supported);
 bool recomp_ios_guide_open();
 void recomp_ios_touch_refresh(void);

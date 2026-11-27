@@ -1,40 +1,42 @@
-diff --git a/src/video/uikit/SDL_uikitmetalview.m b/src/video/uikit/SDL_uikitmetalview.m
-index da0a8ed..9f151e2 100644
 --- a/src/video/uikit/SDL_uikitmetalview.m
 +++ b/src/video/uikit/SDL_uikitmetalview.m
-@@ -56,6 +56,35 @@
+@@ -54,6 +54,18 @@
+     }
+ 
      return self;
++}
++
++// Reconcile the fullscreen root view before obtaining each drawable.
++- (void)syncFullscreenDrawable
++{
++    UIWindow *window = self.window;
++    if (!window || !self.superview || window.rootViewController.view != self) return;
++    CGRect frame = [self.superview convertRect:window.bounds fromView:window];
++    if (!CGRectIsEmpty(frame) && !CGRectEqualToRect(self.frame, frame)) self.frame = frame;
++    if (self.layer.contentsScale != window.screen.nativeScale)
++        self.layer.contentsScale = window.screen.nativeScale;
++    [self updateDrawableSize];
  }
  
-+// DOA3 uses a single fullscreen root Metal view. UIKit can temporarily
-+// reparent its snapshot during a screenshot; restore only the game view.
-+- (void)didMoveToWindow
-+{
-+    [super didMoveToWindow];
-+    [[NSNotificationCenter defaultCenter] removeObserver:self
-+        name:UIApplicationUserDidTakeScreenshotNotification object:nil];
-+    if (self.window) {
-+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(restoreAfterCapture:)
-+            name:UIApplicationUserDidTakeScreenshotNotification object:nil];
-+    }
-+}
-+
-+- (void)restoreAfterCapture:(NSNotification *)notification
-+{
-+    dispatch_async(dispatch_get_main_queue(), ^{
-+        UIWindow *window = self.window;
-+        if (!window || window.rootViewController.view != self || !self.superview) return;
-+        [window setNeedsLayout];
-+        [window layoutIfNeeded];
-+        CGRect bounds = [self.superview convertRect:window.bounds fromView:window];
-+        if (!CGRectIsEmpty(bounds)) self.frame = bounds;
-+        self.contentScaleFactor = window.screen.nativeScale;
-+        [self setNeedsLayout];
-+        [self layoutIfNeeded];
-+        [self updateDrawableSize];
-+    });
-+}
-+
  // Set the size of the metal drawables when the view is resized.
- - (void)layoutSubviews
- {
+--- a/src/gpu/metal/SDL_gpu_metal.m
++++ b/src/gpu/metal/SDL_gpu_metal.m
+@@ -3924,7 +3924,18 @@
+         }
+ 
+         // Get the drawable and its underlying texture
++#if defined(SDL_PLATFORM_IOS)
++        id view = windowData->layer.delegate;
++        SEL sync = NSSelectorFromString(@"syncFullscreenDrawable");
++        if ([view respondsToSelector:sync]) {
++            IMP impl = [view methodForSelector:sync];
++            ((void (*)(id, SEL))impl)(view, sync);
++        }
++#endif
+         windowData->drawable = [windowData->layer nextDrawable];
++        if (!windowData->drawable) return true;
++        if (swapchainTextureWidth) *swapchainTextureWidth = (Uint32)windowData->drawable.texture.width;
++        if (swapchainTextureHeight) *swapchainTextureHeight = (Uint32)windowData->drawable.texture.height;
+         windowData->texture.handle = [windowData->drawable texture];
+ 
+         // Set up presentation

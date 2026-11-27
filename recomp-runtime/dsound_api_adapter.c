@@ -839,9 +839,38 @@ static void create_sound_buffer(void)
     kernel_return(4u, RECOMP_DSOUND_OK);
 }
 
+#if defined(RECOMP_IOS_APP) && defined(RECOMP_FULL_PROGRAM)
+extern bool recomp_ios_frontend_frame(void);
+extern void recomp_audio_output_finish_voice(uint32_t slot);
+
+/* The front-end can stop a short effect during its screen transition. The
+   SDL stream owns the submitted PCM and can drain after the guest frees it. */
+static void finish_frontend_effect(Buffer *buffer, uint64_t now)
+{
+    RecompDsoundBufferModel *output = &buffer->output_model;
+    if (frame_clock() || !recomp_ios_frontend_frame() || !buffer->pcm ||
+        !output->playing || !output->block_align || !output->sample_rate ||
+        (output->play_flags & RECOMP_DSOUND_PLAY_LOOPING) ||
+        (uint64_t)(output->size_bytes / output->block_align) * 1000u >
+            (uint64_t)output->sample_rate * 900u) return;
+    while (output->playing) {
+        const uint64_t start = output->last_ms;
+        uint32_t offset = 0u;
+        const uint32_t bytes = recomp_dsound_buffer_consume(output, start + 75u, &offset);
+        if (!bytes) break;
+        output_span(buffer, output, now, offset, bytes, NULL);
+        now += 75u;
+    }
+    recomp_audio_output_finish_voice((uint32_t)(buffer - buffers));
+}
+#endif
+
 static void buffer_release(void)
 {
     Buffer *buffer = buffer_at(kernel_arg(1u));
+#if defined(RECOMP_IOS_APP) && defined(RECOMP_FULL_PROGRAM)
+    finish_frontend_effect(buffer, now_ms());
+#endif
 
 #if defined(__APPLE__) && defined(RECOMP_FULL_PROGRAM)
             extern void recomp_audio_output_finish_voice(uint32_t);
@@ -921,6 +950,9 @@ static void stop_buffer(Buffer *buffer, uint32_t flags)
         buffer->model.play_flags &= ~RECOMP_DSOUND_PLAY_LOOPING;
         buffer->output_model.play_flags = buffer->model.play_flags;
     } else {
+#if defined(RECOMP_IOS_APP) && defined(RECOMP_FULL_PROGRAM)
+        finish_frontend_effect(buffer, now);
+#endif
         recomp_dsound_buffer_stop(&buffer->model, now);
         reset_output(buffer);
     }

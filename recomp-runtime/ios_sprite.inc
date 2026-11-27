@@ -9,6 +9,21 @@ static float iosSpriteWidth(const RecompD3dPresenterDrawCommand &draw, unsigned 
     if (!draw.has_texture || draw.texture_is_backbuffer || draw.target.offscreen ||
         draw.vertex_count<4 || draw.vertex_count>6 || offset==RECOMP_D3D_FVF_ABSENT ||
         offset+8>draw.vertex_stride || !(left<right && top<bottom)) return 1.f;
+    // Source texels in Xbox UI atlases can already be anamorphic. These
+    // menu elements have known locations and are squeezed by the desktop
+    // 4:3 rule even when their texture ratio alone cannot identify them.
+    if (recomp_ios_frontend_frame() && scaleX < .95f) {
+        const float x = .5f+((left+right)*.5f/guestWidth-.5f)*scaleX*physicalAspect/(16.f/9.f);
+        const float y = (top+bottom)*.5f/guestHeight;
+        const float width = (right-left)/guestWidth*scaleX*physicalAspect/(16.f/9.f);
+        const float height = (bottom-top)/guestHeight;
+        const bool controller = std::abs(x-.5f)<.025f && width>.14f && width<.22f &&
+            ((y>.32f && y<.42f && height>.26f && height<.36f) ||
+             (y>.65f && y<.73f && height>.16f && height<.24f));
+        const bool thumbnail = recomp_ios_select_grid() && y>.64f && y<.90f &&
+            width>.037f && width<.085f && height>.07f && height<.125f;
+        if (controller || thumbnail) return 4.f/3.f;
+    }
     SpriteRegion region;
     for (unsigned i=0;i<draw.vertex_count;++i) {
         const auto *v=static_cast<const uint8_t *>(draw.vertex_bytes)+i*draw.vertex_stride;
@@ -27,35 +42,5 @@ static float iosSpriteWidth(const RecompD3dPresenterDrawCommand &draw, unsigned 
     if (w<2 || h<2 || w>draw.texture.width+1 || h>draw.texture.height+1) return 1.f;
     float shown=((right-left)/guestWidth)/((bottom-top)/guestHeight)*physicalAspect*scaleX/scaleY;
     float ratio=shown*h/w;
-    // The settings screen consists of eight glyphs on a vertical baseline.
-    // Acquire their source pixels while the retail game has its atlas loaded.
-    float x=.5f+((left+right)*.5f/guestWidth-.5f)*scaleX*physicalAspect/(16.f/9.f);
-    float y=(top+bottom)*.5f/guestHeight;
-    int row=int(std::lround((y-.189f)/.071f));
-    if (recomp_ios_frontend_frame() && row>=0 && row<8 && std::abs(x-.6575f)<.012f &&
-        std::abs(y-(.189f+.071f*row))<.012f && w<=96 && h<=96 && w/h>.45f && w/h<2.f &&
-        draw.texture_bytes && draw.palette_bytes && draw.palette_byte_count>=1024 &&
-        draw.texture.format_byte==RECOMP_D3D_TEXTURE_FORMAT_P8 && !draw.texture.linear &&
-        region.u0>=0 && region.v0>=0 && region.u1<=1 && region.v1<=1) {
-        recomp_ios_observe_icon(row,draw,int(std::lround(region.u0*us)),int(std::lround(region.v0*vs)),
-            int(std::lround(w)),int(std::lround(h)));
-    }
-    // Some atlas pages combine the icon, the backing and the action label
-    // into a single strip. Locate the icon inside its source rectangle.
-    if (row>=0 && row<8 && w>64 && h>12 && w/h>3 && w/h<8 &&
-        std::abs(y-(.189f+.071f*row))<.012f && recomp_ios_frontend_frame() &&
-        draw.texture_bytes && draw.palette_bytes && draw.palette_byte_count>=1024 &&
-        draw.texture.format_byte==RECOMP_D3D_TEXTURE_FORMAT_P8 && !draw.texture.linear) {
-        const float screenWidth=(right-left)/guestWidth*scaleX*physicalAspect/(16.f/9.f);
-        const float anchor=(.6575f-x)/screenWidth+.5f;
-        if (anchor>.035f && anchor<.22f) {
-            const float halfWidth=.013f/screenWidth;
-            const float halfHeight=.024f*guestHeight/(bottom-top);
-            const int sx=int(std::lround(region.u0*us+(anchor-halfWidth)*w));
-            const int sy=int(std::lround(region.v0*vs+(.5f-halfHeight)*h));
-            recomp_ios_observe_icon(row,draw,sx,sy,int(std::lround(2*halfWidth*w)),
-                int(std::lround(2*halfHeight*h)));
-        }
-    }
-    return ratio>=.71f && ratio<=.79f ? 1.f/ratio : 1.f;
+    return ratio>=.64f && ratio<=.81f ? 1.f/ratio : 1.f;
 }
