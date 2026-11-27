@@ -63,7 +63,7 @@ bool recomp_xapi_deterministic = false;
 uint64_t recomp_xapi_clock_reads;
 
 #ifdef RECOMP_IOS_LIFECYCLE
-void recomp_xapi_set_guide_paused(bool paused)
+extern "C" void recomp_xapi_set_guide_paused(bool paused)
 {
     std::lock_guard<std::mutex> lock(guestPauseMutex);
     const auto now = Clock::now();
