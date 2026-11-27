@@ -18,12 +18,6 @@
 #endif
 
 #if defined(TARGET_OS_IOS) && TARGET_OS_IOS && defined(RECOMP_FULL_PROGRAM)
-bool recomp_ios_select_grid(void)
-{
-    return *recomp_memory(DOA3(0x00480b70u, 0x00598e80u, 0x005998c0u), 1u) == 0u &&
-           *recomp_memory(DOA3(0x008612adu, 0x009b7b8du, 0x00972bedu), 1u) == 3u;
-}
-
 bool recomp_ios_frontend_frame(void)
 {
     /* Same guest front-end state used by the original main-menu adapter. */

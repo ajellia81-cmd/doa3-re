@@ -15,7 +15,6 @@
 #include <objc/runtime.h>
 
 extern "C" void recomp_audio_output_set_suspended(bool suspended);
-extern "C" bool recomp_ios_select_grid(void);
 extern "C" bool recomp_ios_frontend_frame(void);
 #endif
 
@@ -588,7 +587,14 @@ inline RecompWidescreen2dScale widescreen2dScale(const RecompD3dPresenter *p,
 }
 
 #ifdef RECOMP_IOS_LIFECYCLE
-#include "ios_sprite.inc"
+// The frontend uses a centered 16:9 canvas inside the wide render target.
+// The presentation crop reverses this mapping for the entire canvas.
+constexpr float iosUiAspect = 16.0f / 9.0f;
+
+float iosUiCanvasFraction(const RecompD3dPresenter *presenter)
+{
+    return std::min(1.0f, iosUiAspect * presenter->aspect_h / presenter->aspect_w);
+}
 #endif
 
 namespace {
@@ -3701,7 +3707,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                     presentClientWidth(presenter, mainHeight(presenter))) / mainHeight(presenter);
 #ifdef RECOMP_IOS_LIFECYCLE
                 const bool frontend = recomp_ios_frontend_frame();
-                src_aspect = frontend ? 16.0f / 9.0f : static_cast<float>(swap_w) / swap_h;
+                src_aspect = frontend ? iosUiAspect : static_cast<float>(swap_w) / swap_h;
 #endif
                 const float dst_aspect = static_cast<float>(swap_w) / swap_h;
                 int dst_x = 0, dst_y = 0, dst_w = swap_w, dst_h = swap_h;
@@ -3740,8 +3746,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 if (frontend && presenter->widescreen) {
                     // The guest texture can be anamorphic at 1x. Crop against
                     // the logical display aspect so 16:9 preserves proportions.
-                    const double fraction = (16.0 * presenter->aspect_h) /
-                                            (9.0 * presenter->aspect_w);
+                    const float fraction = iosUiCanvasFraction(presenter);
                     blit.source.w = std::clamp(
                         static_cast<uint32_t>(source_w * fraction + 0.5), 1u, source_w);
                     blit.source.x = (source_w - blit.source.w) / 2u;
@@ -4056,6 +4061,16 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             constants[14] = 0.0f;
             constants[15] = 1.0f;
             if (presenter->widescreen && !draw.program_count && !draw.target.offscreen) {
+#ifdef RECOMP_IOS_LIFECYCLE
+                // A frontend sprite is already laid out in guest screen
+                // coordinates. Apply the canvas transform exactly once,
+                // regardless of its position, texture or primitive count.
+                const bool screenImage = !draw.texture_is_backbuffer &&
+                    !draw.texture_is_front_buffer && !draw.four_tap_filter &&
+                    (recomp_ios_frontend_frame() || draw.has_texture);
+                const auto scale = RecompWidescreen2dScale{
+                    screenImage ? iosUiCanvasFraction(presenter) : 1.0f, 1.0f};
+#else
                 float left = INFINITY, right = -INFINITY, top = INFINITY, bottom = -INFINITY;
                 for (uint32_t i = 0u; i < draw.vertex_count; ++i) {
                     float xy[2];
@@ -4068,21 +4083,6 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                     bottom = std::max(bottom, xy[1]);
                 }
                 const auto scale = widescreen2dScale(presenter, left, right, top, bottom);
-#ifdef RECOMP_IOS_LIFECYCLE
-                // Keep each center in the original layout while recovering
-                // the width of sprites narrowed twice by the guest and host.
-                {
-                    const float widthFactor=iosSpriteWidth(draw,layout.texcoord_offset,left,right,top,bottom,
-                        guest_w,guest_h,float(presenter->aspect_w)/presenter->aspect_h,scale.x,scale.y);
-                    const float center=(left+right)*.5f;
-                    for (uint32_t i=0;widthFactor!=1.f && i<draw.vertex_count;++i) {
-                        auto *v=vdata.data()+v_offset+i*draw.vertex_stride;
-                        float x;
-                        std::memcpy(&x,v,sizeof x);
-                        x=center+(x-center)*widthFactor;
-                        std::memcpy(v,&x,sizeof x);
-                    }
-                }
 #endif
                 constants[12] += constants[0] * 0.5f * (1.0f - scale.x) * presenter->config.width;
                 constants[0] *= scale.x;
@@ -4106,8 +4106,15 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         const bool sub_viewport = draw.has_transform && !draw.program_count && draw.viewport[2] > 0.0f;
         float squeeze = 1.0f;
         if (sub_viewport && presenter->widescreen && !draw.target.offscreen) {
+#ifdef RECOMP_IOS_LIFECYCLE
+            // Embedded 3D views share the frontend canvas; full-target
+            // geometry and battlefield cameras use the wide target.
+            if (recomp_ios_frontend_frame() && draw.viewport[2] < presenter->config.width)
+                squeeze = iosUiCanvasFraction(presenter);
+#else
             squeeze = widescreen2dScale(presenter, draw.viewport[0], draw.viewport[0] + draw.viewport[2],
                 draw.viewport[1], draw.viewport[1] + draw.viewport[3]).x;
+#endif
             for (unsigned row = 0; row < 16; ++row) constants[row * 4] /= squeeze;
         }
 
