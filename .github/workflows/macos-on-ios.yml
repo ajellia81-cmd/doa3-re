@@ -100,7 +100,7 @@ jobs:
           runner.write_text(s + "\nint main(int argc, char **argv) { return SDL_RunApp(argc, argv, game_main, nullptr); }\n")
           PY
           cmake -S recomp-runtime -DSDL3_DIR="$RUNNER_TEMP/sdl-mac/lib/cmake/SDL3" -B build/mac -G Ninja -DCMAKE_OSX_SYSROOT=macosx -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS="-lobjc" -DCMAKE_CXX_FLAGS="-DRECOMP_IOS_APP -DRECOMP_IOS_LIFECYCLE" \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS="-lobjc" -DCMAKE_C_FLAGS="-DRECOMP_IOS_APP" -DCMAKE_CXX_FLAGS="-DRECOMP_IOS_APP -DRECOMP_IOS_LIFECYCLE" \
             -DRECOMP_DOA3_JP=ON -DRECOMP_PROGRAM_DIR="$DOA3_GENERATED" \
             -DRECOMP_PROGRAM_MANIFEST_SHA256="$DOA3_MANIFEST" -DRECOMP_PROGRAM_EBP_EXPECTED="$DOA3_EBP"
           log="$RUNNER_TEMP/doa3-build.log"
@@ -136,6 +136,7 @@ jobs:
           test -d "$DEVELOPER_DIR"
           xcrun --sdk iphoneos --show-sdk-version
           python3 "$RUNNER_TEMP/compat/tools/convert_app.py" "$mac" "$app" com.doa3re.ios --profile /dev/null --identity - --team UNSIGNED --no-metal-hud
+          git -C "$RUNNER_TEMP/sdl" apply "$GITHUB_WORKSPACE/recomp-runtime/ios-metal-layout.patch"
           cmake -S "$RUNNER_TEMP/sdl" -B build/sdl-ios -G Ninja -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF
           cmake --build build/sdl-ios --target SDL3-shared --parallel 3
           target=$(find "$app" -name "$name" -type f | head -1)

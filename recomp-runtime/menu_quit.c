@@ -410,7 +410,11 @@ void recomp_menu_quit_install(void)
     const uint32_t colours_size = 1024u;
     const uint32_t palette = guest_alloc(12u, 4u), colours = guest_alloc(colours_size, 0x80u);
     entry = guest_alloc(12u, 4u);
+#ifdef RECOMP_IOS_APP
+    static const char HELP[] = "@-5End the current game session";
+#else
     static const char HELP[] = "@-5Quit the game and return to the desktop";
+#endif
     help = guest_alloc((uint32_t)sizeof HELP, 4u);
     if (palette == 0u || colours == 0u || entry == 0u || help == 0u) return;
     for (unsigned i = 0u; i < 256u; ++i) {

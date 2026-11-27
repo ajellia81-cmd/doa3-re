@@ -2,6 +2,7 @@
 namespace {
 struct GuideSettings {
     bool smooth = true;
+    bool fps = false;
     int binding[8] = {0,1,2,3,4,5,6,7};
 };
 GuideSettings settings;
@@ -25,13 +26,14 @@ void loadGuide()
     std::ifstream in(settingsFile());
     GuideSettings candidate;
     int version, flag;
-    if (!(in >> version >> flag) || version != 1 || (flag != 0 && flag != 1)) return;
+    if (!(in >> version >> flag) || (version != 1 && version != 2) || (flag != 0 && flag != 1)) return;
     unsigned used = 0;
     for (int &key : candidate.binding) {
         if (!(in >> key) || key < 0 || key >= 8 || (used & (1u << key))) return;
         used |= 1u << key;
     }
     candidate.smooth = flag != 0;
+    if (version==2 && !(in >> candidate.fps)) return;
     settings = candidate;
 }
 void saveGuide()
@@ -40,13 +42,13 @@ void saveGuide()
     if (path.empty()) return;
     const auto tmp = path+".tmp";
     std::ofstream out(tmp);
-    out << 1 << ' ' << int(settings.smooth);
+    out << 2 << ' ' << int(settings.smooth);
     for (int key : settings.binding) out << ' ' << key;
-    out << '\n';
+    out << ' ' << settings.fps << '\n';
     out.close();
     if (out) std::rename(tmp.c_str(),path.c_str());
 }
-int guideRows() { return bindingPage ? 10 : 3; }
+int guideRows() { return bindingPage ? 10 : 4; }
 void openGuide(bool open)
 {
     guideOpen = open;
@@ -59,14 +61,15 @@ void activateGuide()
 {
     if (!bindingPage) {
         if (selection == 0 && highRefresh) { settings.smooth = !settings.smooth; saveGuide(); }
-        if (selection == 1) { bindingPage = true; selection = 0; }
-        else if (selection == 2) openGuide(false);
+        if (selection == 1) { settings.fps=!settings.fps; saveGuide(); }
+        if (selection == 2) { bindingPage = true; selection = 0; }
+        else if (selection == 3) openGuide(false);
     } else if (selection < 8) {
         waitForButton = true;
     } else if (selection == 8) {
         for (int i=0;i<8;++i) settings.binding[i]=i;
         saveGuide();
-    } else { bindingPage = false; selection = 1; }
+    } else { bindingPage = false; selection = 2; }
 }
 void pollGuide(SDL_Gamepad *pad)
 {
@@ -102,7 +105,7 @@ void pollGuide(SDL_Gamepad *pad)
     if (press & (1u<<10)) selection=(selection+1)%guideRows();
     if (press & 1u) activateGuide();
     else if (press & 2u) {
-        if (bindingPage) { bindingPage=false; selection=1; }
+        if (bindingPage) { bindingPage=false; selection=2; }
         else openGuide(false);
     }
 }
@@ -114,6 +117,9 @@ void guideTouch(float x,float y)
     selection=int((y-.18f)/rowHeight());
     if (selection < guideRows()) activateGuide();
 }
+}
+#include "ios_icons.inc"
+namespace {
 void drawGuide(ImVec2 size)
 {
     auto *draw=ImGui::GetForegroundDrawList();
@@ -129,8 +135,18 @@ void drawGuide(ImVec2 size)
             title=std::string(targets[i])+"     "+((waitForButton && selection==i)?"Press a controller button":sources[settings.binding[i]]);
         else if (bindingPage) title=i==8?"Restore defaults":"Back";
         else if (i==0) title=std::string("Smooth Motion 120 fps     ")+(highRefresh?(settings.smooth?"On":"Off"):"Unavailable");
-        else title=i==1?"Button mapping":"Resume game";
-        draw->AddText(ImGui::GetFont(),font,{size.x*.24f,y+size.y*.008f},IM_COL32_WHITE,title.c_str());
+        else if (i==1) title=std::string("Show FPS     ")+(settings.fps?"On":"Off");
+        else title=i==2?"Button mapping":"Resume game";
+        float labelX=size.x*.24f;
+        if (bindingPage && i<8) {
+            loadIcons();
+            if (haveIcons) {
+                const int row=i==4?5:i==5?4:i;
+                drawIcon(draw,row,{labelX,y+size.y*.006f},size.y*.052f);
+                labelX+=size.x*.06f;
+            }
+        }
+        draw->AddText(ImGui::GetFont(),font,{labelX,y+size.y*.008f},IM_COL32_WHITE,title.c_str());
     }
 }
 }

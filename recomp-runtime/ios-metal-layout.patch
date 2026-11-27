@@ -1,0 +1,40 @@
+diff --git a/src/video/uikit/SDL_uikitmetalview.m b/src/video/uikit/SDL_uikitmetalview.m
+index da0a8ed..9f151e2 100644
+--- a/src/video/uikit/SDL_uikitmetalview.m
++++ b/src/video/uikit/SDL_uikitmetalview.m
+@@ -56,6 +56,35 @@
+     return self;
+ }
+ 
++// DOA3 uses a single fullscreen root Metal view. UIKit can temporarily
++// reparent its snapshot during a screenshot; restore only the game view.
++- (void)didMoveToWindow
++{
++    [super didMoveToWindow];
++    [[NSNotificationCenter defaultCenter] removeObserver:self
++        name:UIApplicationUserDidTakeScreenshotNotification object:nil];
++    if (self.window) {
++        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(restoreAfterCapture:)
++            name:UIApplicationUserDidTakeScreenshotNotification object:nil];
++    }
++}
++
++- (void)restoreAfterCapture:(NSNotification *)notification
++{
++    dispatch_async(dispatch_get_main_queue(), ^{
++        UIWindow *window = self.window;
++        if (!window || window.rootViewController.view != self || !self.superview) return;
++        [window setNeedsLayout];
++        [window layoutIfNeeded];
++        CGRect bounds = [self.superview convertRect:window.bounds fromView:window];
++        if (!CGRectIsEmpty(bounds)) self.frame = bounds;
++        self.contentScaleFactor = window.screen.nativeScale;
++        [self setNeedsLayout];
++        [self layoutIfNeeded];
++        [self updateDrawableSize];
++    });
++}
++
+ // Set the size of the metal drawables when the view is resized.
+ - (void)layoutSubviews
+ {

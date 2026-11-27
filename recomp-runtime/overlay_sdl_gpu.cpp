@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include <array>
+#include "d3d_presenter.h"
 #include <fstream>
 #include <string>
 #include <cstring>
@@ -178,7 +180,17 @@ void recomp_overlay_sdl_gpu_draw(SDL_GPUDevice *device, SDL_Window *window,
 {
     bool show_touch = false;
 #ifdef RECOMP_IOS_LIFECYCLE
-    show_touch = touch_visible || guideOpen;
+    loadGuide();
+    static Uint64 startTime;
+    static unsigned count, rate;
+    const Uint64 stamp=SDL_GetTicksNS();
+    if (!settings.fps || guideOpen || !startTime || stamp-startTime>2000000000ull) {
+        startTime=stamp; count=rate=0;
+    } else if (++count && stamp-startTime>=500000000ull) {
+        rate=unsigned(std::lround(count*1e9/(stamp-startTime)));
+        startTime=stamp; count=0;
+    }
+    show_touch = touch_visible || guideOpen || settings.fps;
 #endif
     if (device == nullptr || window == nullptr || command_buffer == nullptr || target == nullptr ||
         width == 0u || height == 0u || (!show_touch && recomp_overlay_empty(text))) {
@@ -200,7 +212,18 @@ void recomp_overlay_sdl_gpu_draw(SDL_GPUDevice *device, SDL_Window *window,
     }
 #ifdef RECOMP_IOS_LIFECYCLE
     if (guideOpen) drawGuide(io.DisplaySize);
-    else if (show_touch) drawTouchPad(io.DisplaySize);
+    else {
+        if (touch_visible) drawTouchPad(io.DisplaySize);
+        if (settings.fps && rate) {
+            char value[24];
+            std::snprintf(value,sizeof value,"%u FPS",rate);
+            const float h=io.DisplaySize.y*.032f;
+            ImVec2 origin(io.DisplaySize.x*.06f,io.DisplaySize.y*.035f);
+            auto *draw=ImGui::GetForegroundDrawList();
+            draw->AddRectFilled(origin,{origin.x+h*4.5f,origin.y+h*1.2f},IM_COL32(0,0,0,180));
+            draw->AddText(ImGui::GetFont(),h,origin,IM_COL32_WHITE,value);
+        }
+    }
 #endif
     ImGui::Render();
     ImDrawData *draw_data = ImGui::GetDrawData();

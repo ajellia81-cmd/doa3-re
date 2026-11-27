@@ -585,6 +585,10 @@ inline RecompWidescreen2dScale widescreen2dScale(const RecompD3dPresenter *p,
         left, right, top, bottom);
 }
 
+#ifdef RECOMP_IOS_LIFECYCLE
+#include "ios_sprite.inc"
+#endif
+
 namespace {
 
 RecompD3dPresenter *active_presenter = nullptr;
@@ -3283,6 +3287,7 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     SDL_WindowFlags win_flags = SDL_WINDOW_RESIZABLE;
 #ifdef RECOMP_IOS_LIFECYCLE
     win_flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    fullscreen = true;
 #endif
     if (headless) {
         win_flags |= SDL_WINDOW_HIDDEN;
@@ -3634,6 +3639,9 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             return RECOMP_D3D_PRESENTER_UNSUPPORTED_COMMAND;
         }
 
+#ifdef RECOMP_IOS_LIFECYCLE
+        recomp_ios_finish_icons();
+#endif
         flushSegment(presenter);
         ensureBackbufferResolved(presenter);
 
@@ -4046,26 +4054,18 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 }
                 const auto scale = widescreen2dScale(presenter, left, right, top, bottom);
 #ifdef RECOMP_IOS_LIFECYCLE
-                // Keep the cell and cursor in place. Only change the horizontal
-                // sample span of the textured face inside a roster-sized quad.
-                float w = (right-left) / presenter->config.width;
-                float h = (bottom-top) / presenter->config.height;
-                if (draw.has_texture && draw.vertex_count <= 6 && draw.vertex_count >= 4 &&
-                    layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT &&
-                    layout.texcoord_offset + sizeof(float) <= draw.vertex_stride &&
-                    h >= .085f && h <= .115f && w >= .065f && w <= .105f &&
-                    top >= .64f * presenter->config.height && bottom <= .90f * presenter->config.height &&
-                    recomp_ios_select_grid()) {
-                    float u[6], lo = INFINITY, hi = -INFINITY;
-                    for (unsigned i=0; i<draw.vertex_count; ++i) {
-                        std::memcpy(&u[i], v_src+i*draw.vertex_stride+layout.texcoord_offset, sizeof(float));
-                        lo = std::min(lo,u[i]); hi = std::max(hi,u[i]);
-                    }
-                    const float center = (lo+hi)*.5f;
-                    for (unsigned i=0; i<draw.vertex_count; ++i) {
-                        const float sample = center + .75f*(u[i]-center);
-                        std::memcpy(vdata.data()+v_offset+i*draw.vertex_stride+layout.texcoord_offset,
-                            &sample,sizeof(sample));
+                // Keep each center in the original layout while recovering
+                // the width of sprites narrowed twice by the guest and host.
+                {
+                    const float widthFactor=iosSpriteWidth(draw,layout.texcoord_offset,left,right,top,bottom,
+                        guest_w,guest_h,float(presenter->aspect_w)/presenter->aspect_h,scale.x,scale.y);
+                    const float center=(left+right)*.5f;
+                    for (uint32_t i=0;widthFactor!=1.f && i<draw.vertex_count;++i) {
+                        auto *v=vdata.data()+v_offset+i*draw.vertex_stride;
+                        float x;
+                        std::memcpy(&x,v,sizeof x);
+                        x=center+(x-center)*widthFactor;
+                        std::memcpy(v,&x,sizeof x);
                     }
                 }
 #endif
