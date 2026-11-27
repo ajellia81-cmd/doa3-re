@@ -12,7 +12,7 @@ void loadIcons() {
     tried=true;
     const auto path=settingsFile();
     if (path.empty()) return;
-    std::ifstream in(path+".button-icons-v4",std::ios::binary);
+    std::ifstream in(path+".button-icons-v5",std::ios::binary);
     GuideIcons saved;
     if (!in.read(reinterpret_cast<char*>(&saved),sizeof saved)) return;
     for(float a:saved.aspect) if (!(a>=.4f && a<=2.1f)) return;
@@ -39,19 +39,22 @@ bool recomp_ios_wants_icons()
 }
 // Validate four aligned face buttons before adopting any image from a frame.
 void recomp_ios_read_button_strip(const uint8_t *bgra, unsigned width, unsigned height,
-    unsigned top, unsigned frameHeight)
+    unsigned stride, unsigned top, unsigned frameHeight)
 {
     if (haveIcons || !bgra || width<16 || height<16) return;
     const unsigned radius = std::max(1u,frameHeight/65);
     const unsigned halfHeight = std::max(1u,frameHeight/46);
-    const auto pixel = [=](unsigned x,unsigned y) { return bgra+4*(y*width+x); };
-    const auto rowY = [=](unsigned row) {
-        return int(std::lround((.190+.071*row)*frameHeight))-int(top);
+    const auto pixel = [=](unsigned x,unsigned y) { return bgra+4*(y*stride+x); };
+    int yOffset=0, bestOffset=0;
+    const auto rowY = [&](unsigned row) {
+        return int(std::lround((.190+.071*row)*frameHeight))-int(top)+yOffset;
     };
-    if (rowY(0)<int(halfHeight) || rowY(7)+int(halfHeight)>=int(height)) return;
 
     unsigned bestScore=0, centerX=0;
-    for (unsigned x=radius; x+radius<width; x+=2) {
+    const int range=int(frameHeight/50);
+    for (yOffset=-range; yOffset<=range; yOffset+=std::max(1,range/3)) {
+    if (rowY(0)<int(halfHeight) || rowY(7)+int(halfHeight)>=int(height)) continue;
+    for (unsigned x=radius; x+radius<width; x+=4) {
         unsigned score=0;
         bool valid=true;
         for (unsigned row=0; row<4; ++row) {
@@ -68,8 +71,10 @@ void recomp_ios_read_button_strip(const uint8_t *bgra, unsigned width, unsigned 
             if (matches<(radius*radius)/16) { valid=false; break; }
             score+=matches;
         }
-        if (valid && score>bestScore) { bestScore=score; centerX=x; }
+        if (valid && score>bestScore) { bestScore=score; centerX=x; bestOffset=yOffset; }
     }
+    }
+    yOffset=bestOffset;
     const unsigned halfWidth = halfHeight;
     if (!bestScore || centerX<halfWidth || centerX+halfWidth>=width) return;
     for (unsigned row=0; row<8; ++row) {
@@ -85,11 +90,12 @@ void recomp_ios_read_button_strip(const uint8_t *bgra, unsigned width, unsigned 
         }
     }
     haveIcons=true;
+    std::fprintf(stderr,"[guide] loaded Xbox button art from Button Config\n");
     const auto path=settingsFile();
     if (path.empty()) return;
     const auto temp=path+".icons.tmp";
     std::ofstream out(temp,std::ios::binary);
     out.write(reinterpret_cast<const char*>(&guideIcons),sizeof guideIcons);
     out.close();
-    if (out) std::rename(temp.c_str(),(path+".button-icons-v4").c_str());
+    if (out) std::rename(temp.c_str(),(path+".button-icons-v5").c_str());
 }

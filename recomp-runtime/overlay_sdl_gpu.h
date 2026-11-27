@@ -8,7 +8,7 @@
 #ifdef RECOMP_IOS_LIFECYCLE
 bool recomp_ios_wants_icons();
 void recomp_ios_read_button_strip(const uint8_t *bgra, unsigned width, unsigned height,
-    unsigned top, unsigned frameHeight);
+    unsigned stride, unsigned top, unsigned frameHeight);
 #include <SDL3/SDL_events.h>
 bool recomp_ios_smooth(bool supported);
 bool recomp_ios_guide_open();

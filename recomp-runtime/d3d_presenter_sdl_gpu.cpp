@@ -469,7 +469,7 @@ struct RecompD3dPresenter {
     SDL_GPUTransferBuffer *buttonStrip = nullptr;
     SDL_GPUFence *buttonStripFence = nullptr;
     Uint64 nextButtonStrip = 0;
-    unsigned buttonStripWidth = 0, buttonStripHeight = 0;
+    unsigned buttonStripWidth = 0, buttonStripHeight = 0, buttonStripStride = 0;
     unsigned buttonStripTop = 0, buttonStripFrameHeight = 0;
 #endif
     Uint64 lastGuestPresent = 0, skipMidpointsUntil = 0;
@@ -2860,9 +2860,11 @@ void flushSegment(RecompD3dPresenter *presenter)
     }
     SDL_GPURenderPass *rpass = SDL_BeginGPURenderPass(cmdbuf, &color_info, 1, use_depth ? &depth_info : nullptr);
     if (rpass) {
-        SDL_GPUViewport viewport{0.0f, 0.0f, seg.target_w, seg.target_h, 0.0f, 1.0f};
+        const float targetW = midpoint ? static_cast<float>(presenter->midWidth) : seg.target_w;
+        const float targetH = midpoint ? static_cast<float>(presenter->midHeight) : seg.target_h;
+        SDL_GPUViewport viewport{0.0f, 0.0f, targetW, targetH, 0.0f, 1.0f};
         SDL_SetGPUViewport(rpass, &viewport);
-        SDL_Rect scissor{0, 0, static_cast<int>(seg.target_w), static_cast<int>(seg.target_h)};
+        SDL_Rect scissor{0, 0, static_cast<int>(targetW), static_cast<int>(targetH)};
         SDL_SetGPUScissor(rpass, &scissor);
 
         SDL_GPUGraphicsPipeline *last_pipe = nullptr;
@@ -2956,7 +2958,13 @@ void flushSegment(RecompD3dPresenter *presenter)
                 last_constant_color = constant_key;
             }
 
-            const SDL_GPUViewport &want = q.viewport.w > 0.0f ? q.viewport : viewport;
+            SDL_GPUViewport want = q.viewport.w > 0.0f ? q.viewport : viewport;
+            if (midpoint && q.viewport.w > 0.0f) {
+                want.x *= targetW / seg.target_w;
+                want.w *= targetW / seg.target_w;
+                want.y *= targetH / seg.target_h;
+                want.h *= targetH / seg.target_h;
+            }
             if (std::memcmp(&want, &last_viewport, sizeof want) != 0) {
                 SDL_SetGPUViewport(rpass, &want);
                 last_viewport = want;
@@ -3613,12 +3621,14 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmdbuf, &color_info, 1, use_depth ? &depth_info : nullptr);
         if (pass) SDL_EndGPURenderPass(pass);
         if (is_main && presenter->midEnabled) {
-            if (!presenter->midColor || presenter->midWidth != color_w || presenter->midHeight != color_h) {
+            const uint32_t midWidth = std::max(1u,color_w / 2);
+            const uint32_t midHeight = std::max(1u,color_h / 2);
+            if (!presenter->midColor || presenter->midWidth != midWidth || presenter->midHeight != midHeight) {
                 if (presenter->midColor) SDL_ReleaseGPUTexture(presenter->device,presenter->midColor);
                 if (presenter->midDepth) SDL_ReleaseGPUTexture(presenter->device,presenter->midDepth);
                 SDL_GPUTextureCreateInfo spec{};
                 spec.type = SDL_GPU_TEXTURETYPE_2D;
-                spec.width = color_w; spec.height = color_h;
+                spec.width = midWidth; spec.height = midHeight;
                 spec.layer_count_or_depth = spec.num_levels = 1;
                 spec.format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
                 spec.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
@@ -3626,7 +3636,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 spec.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
                 spec.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
                 presenter->midDepth = SDL_CreateGPUTexture(presenter->device,&spec);
-                presenter->midWidth = color_w; presenter->midHeight = color_h;
+                presenter->midWidth = midWidth; presenter->midHeight = midHeight;
                 presenter->midReady = false;
                 presenter->previousPose.clear();
                 if (!presenter->midColor || !presenter->midDepth) presenter->midEnabled = false;
@@ -3685,7 +3695,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             presenter->buttonStripFence = nullptr;
             if (auto *pixels = SDL_MapGPUTransferBuffer(presenter->device,presenter->buttonStrip,false)) {
                 recomp_ios_read_button_strip(static_cast<const uint8_t *>(pixels),
-                    presenter->buttonStripWidth,presenter->buttonStripHeight,
+                    presenter->buttonStripWidth,presenter->buttonStripHeight,presenter->buttonStripStride,
                     presenter->buttonStripTop,presenter->buttonStripFrameHeight);
                 SDL_UnmapGPUTransferBuffer(presenter->device,presenter->buttonStrip);
             }
@@ -3707,7 +3717,9 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             presenter->lateSmoothFrames = 0;
         }
         presenter->lastGuestPresent = presentStart;
-        presenter->submittedMidpoint = false;
+        // Include replayed midpoint draws even when drawable acquisition
+        // refuses the extra presentation. They still consume GPU time.
+        presenter->submittedMidpoint = presenter->midReady;
         SDL_GPUCommandBuffer *cmdbuf = getCommandBuffer(presenter);
         SDL_GPUTexture *shown = nullptr;
         for (int phase = presenter->midReady && !presenter->previousPose.empty() &&
@@ -3757,7 +3769,9 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 /* A picture well above the window's size blits from the mip
                    that matches it, built from a copy of what is shown. */
                 SDL_GPUTexture *source = shown;
-                uint32_t source_w = mainWidth(presenter), source_h = mainHeight(presenter);
+                const bool reducedMidpoint = phase == 0 && shown == presenter->midColor;
+                uint32_t source_w = reducedMidpoint ? presenter->midWidth : mainWidth(presenter);
+                uint32_t source_h = reducedMidpoint ? presenter->midHeight : mainHeight(presenter);
                 uint32_t mip = presentMipLevel(source_w, source_h,
                     static_cast<uint32_t>(dst_w), static_cast<uint32_t>(dst_h));
                 SDL_GPUCopyPass *mip_pass = mip != 0u && ensurePresentTexture(presenter)
@@ -3838,7 +3852,6 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         if (!presenter->midEnabled) presenter->midReady = false;
 #endif
         if (phase == 0) {
-            presenter->submittedMidpoint = swapchain_tex != nullptr;
             SDL_SubmitGPUCommandBuffer(cmdbuf);
             presenter->current_command_buffer = nullptr;
             cmdbuf = getCommandBuffer(presenter);
@@ -3898,25 +3911,28 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             saveScreenshot(presenter, cmdbuf, shown);
 #ifdef RECOMP_IOS_LIFECYCLE
         } else if (!presenter->buttonStripFence && presentStart >= presenter->nextButtonStrip &&
-            recomp_ios_frontend_frame() && recomp_ios_wants_icons()) {
+            recomp_ios_wants_icons()) {
             // Sample the finished menu regardless of the source texture format
             // or whether the game batches the buttons with other sprites.
-            presenter->nextButtonStrip = presentStart + 850000000;
+            presenter->nextButtonStrip = presentStart + 1500000000;
             const float canvasWidth = mainWidth(presenter)*iosUiCanvasFraction(presenter);
             const unsigned left = unsigned((mainWidth(presenter)-canvasWidth)*.5f + canvasWidth*.57f);
             const unsigned width = unsigned(canvasWidth*.23f);
             const unsigned fullHeight = mainHeight(presenter);
-            const unsigned top = unsigned(fullHeight*.15f);
-            const unsigned height = unsigned(fullHeight*.57f);
-            SDL_GPUTransferBufferCreateInfo info{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,width*height*4,0};
+            const unsigned top = unsigned(fullHeight*.12f);
+            const unsigned height = unsigned(fullHeight*.66f);
+            // Pad each linear row to 256 bytes for Metal's texture readback.
+            const unsigned stride = (width + 63u) & ~63u;
+            SDL_GPUTransferBufferCreateInfo info{SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,stride*height*4,0};
             presenter->buttonStrip = SDL_CreateGPUTransferBuffer(presenter->device,&info);
             SDL_GPUCopyPass *pass = presenter->buttonStrip ? SDL_BeginGPUCopyPass(cmdbuf) : nullptr;
             if (pass) {
                 const SDL_GPUTextureRegion region{presenter->backbuffer_resolve,0,0,left,top,0,width,height,1};
-                const SDL_GPUTextureTransferInfo destination{presenter->buttonStrip,0,width,height};
+                const SDL_GPUTextureTransferInfo destination{presenter->buttonStrip,0,stride,height};
                 SDL_DownloadFromGPUTexture(pass,&region,&destination);
                 SDL_EndGPUCopyPass(pass);
                 presenter->buttonStripWidth = width;
+                presenter->buttonStripStride = stride;
                 presenter->buttonStripHeight = height;
                 presenter->buttonStripTop = top;
                 presenter->buttonStripFrameHeight = fullHeight;
