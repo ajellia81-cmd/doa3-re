@@ -1,9 +1,48 @@
 --- a/src/video/uikit/SDL_uikitmetalview.m
 +++ b/src/video/uikit/SDL_uikitmetalview.m
-@@ -54,6 +54,18 @@
+@@ -36,5 +36,10 @@
+ #import "SDL_uikitwindow.h"
+ #import "SDL_uikitmetalview.h"
++#include <SDL3/SDL_hints.h>
++
++@interface SDL_uikitmetalview ()
++@property(nonatomic, strong) CADisplayLink *doaRefreshLink;
++@end
+ 
+ @implementation SDL_uikitmetalview
+ 
+@@ -54,6 +59,47 @@
      }
  
      return self;
++}
++
++// Keep ProMotion at the cadence requested by the renderer while visible.
++- (void)doaRefreshTick:(CADisplayLink *)link
++{
++    (void)link;
++}
++
++- (void)didMoveToWindow
++{
++    [super didMoveToWindow];
++    if (!self.window) {
++        [self.doaRefreshLink invalidate];
++        self.doaRefreshLink = nil;
++    }
++}
++
++- (void)updateDoaRefreshRate
++{
++    const bool highRate = SDL_GetHintBoolean("DOA3_IOS_SMOOTH_REFRESH", false);
++    if (!highRate || self.window.screen.maximumFramesPerSecond < 120) {
++        [self.doaRefreshLink invalidate];
++        self.doaRefreshLink = nil;
++    } else if (!self.doaRefreshLink) {
++        self.doaRefreshLink = [self.window.screen displayLinkWithTarget:self selector:@selector(doaRefreshTick:)];
++        self.doaRefreshLink.preferredFrameRateRange = CAFrameRateRangeMake(120.0, 120.0, 120.0);
++        [self.doaRefreshLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
++    }
 +}
 +
 +// Reconcile the fullscreen root view before obtaining each drawable.
@@ -15,6 +54,7 @@
 +    if (!CGRectIsEmpty(frame) && !CGRectEqualToRect(self.frame, frame)) self.frame = frame;
 +    if (self.layer.contentsScale != window.screen.nativeScale)
 +        self.layer.contentsScale = window.screen.nativeScale;
++    [self updateDoaRefreshRate];
 +    [self updateDrawableSize];
  }
  

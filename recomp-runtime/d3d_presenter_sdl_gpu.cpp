@@ -3554,6 +3554,7 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     p->midCapable = screen && sendInt(screen, sel_registerName("maximumFramesPerSecond")) >= 120 &&
         msaa_count == 1 && !SDL_GetHintBoolean("DOA3_DISABLE_SMOOTH_MOTION", false);
     p->midEnabled = recomp_ios_smooth(p->midCapable);
+    SDL_SetHint("DOA3_IOS_SMOOTH_REFRESH", p->midEnabled ? "1" : "0");
 #endif
     p->msaa_count = msaa_count;
     p->msaa_samples = sample_count;
@@ -3725,7 +3726,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
 #endif
         const Uint64 presentStart = SDL_GetTicksNS();
         constexpr Uint64 slowGuestFrame = 21000000;
-        constexpr Uint64 retryDelay = 2000000000;
+        constexpr Uint64 retryDelay = 500000000;
         if (presenter->submittedMidpoint && presenter->lastGuestPresent &&
             presentStart - presenter->lastGuestPresent > slowGuestFrame &&
             presentStart >= presenter->skipMidpointsUntil) {
@@ -3846,8 +3847,9 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             phase = 0;
             continue;
         }
-        presenter->midEnabled = recomp_ios_smooth(presenter->midCapable) &&
-            SDL_GetTicksNS() >= presenter->skipMidpointsUntil;
+        const bool wantsSmooth = recomp_ios_smooth(presenter->midCapable);
+        SDL_SetHint("DOA3_IOS_SMOOTH_REFRESH", wantsSmooth ? "1" : "0");
+        presenter->midEnabled = wantsSmooth && SDL_GetTicksNS() >= presenter->skipMidpointsUntil;
         if (!presenter->midEnabled) presenter->midReady = false;
 #endif
         if (phase == 0) {
