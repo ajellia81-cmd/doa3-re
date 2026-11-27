@@ -15,6 +15,7 @@
 #include <objc/runtime.h>
 
 extern "C" void recomp_audio_output_set_suspended(bool suspended);
+extern "C" bool recomp_ios_select_grid(void);
 extern "C" bool recomp_ios_frontend_frame(void);
 #endif
 
@@ -328,7 +329,14 @@ bool isSwizzledTextureFormat(uint32_t format_byte)
            format_byte == RECOMP_D3D_TEXTURE_FORMAT_A8;
 }
 
+struct PoseSample {
+    const void *vertices = nullptr;
+    uint32_t texture = 0, count = 0, fvf = 0, first = 0;
+    float matrix[64]{};
+};
+
 struct QueuedDraw {
+    uint32_t midpoint_offset = UINT32_MAX;
     SDL_GPUGraphicsPipeline *pipeline = nullptr;
     uint32_t vertex_offset = 0;
     uint32_t vertex_size = 0;
@@ -452,6 +460,10 @@ struct RecompD3dPresenter {
     SDL_Window *window = nullptr;
     SDL_GPUDevice *device = nullptr;
     SDL_GPUTexture *backbuffer_color = nullptr;
+    SDL_GPUTexture *midColor = nullptr, *midDepth = nullptr;
+    bool midEnabled = false, midReady = false;
+    uint32_t midWidth = 0, midHeight = 0;
+    std::vector<PoseSample> previousPose, currentPose;
     SDL_GPUTexture *backbuffer_depth = nullptr;
     SDL_GPUTexture *backbuffer_resolve = nullptr;
     SDL_GPUTexture *backbuffer_copy = nullptr;
@@ -2817,6 +2829,12 @@ void flushSegment(RecompD3dPresenter *presenter)
         depth_info.stencil_store_op = SDL_GPU_STOREOP_STORE;
     }
 
+    for (int passIndex = 0; passIndex <= int(is_main && presenter->midReady); ++passIndex) {
+    const bool midpoint = passIndex == 1;
+    if (midpoint) {
+        color_info.texture = presenter->midColor;
+        depth_info.texture = presenter->midDepth;
+    }
     SDL_GPURenderPass *rpass = SDL_BeginGPURenderPass(cmdbuf, &color_info, 1, use_depth ? &depth_info : nullptr);
     if (rpass) {
         SDL_GPUViewport viewport{0.0f, 0.0f, seg.target_w, seg.target_h, 0.0f, 1.0f};
@@ -2864,9 +2882,11 @@ void flushSegment(RecompD3dPresenter *presenter)
                 last_i_offset = cur_i_offset;
             }
 
-            if (q.uniform_offset != last_vs_offset || q.vs_uniform_size != last_vs_size) {
-                SDL_PushGPUVertexUniformData(cmdbuf, 0, &seg.uniform_data[q.uniform_offset], q.vs_uniform_size * sizeof(float));
-                last_vs_offset = q.uniform_offset;
+            const uint32_t pose = midpoint && q.midpoint_offset != UINT32_MAX
+                ? q.midpoint_offset : q.uniform_offset;
+            if (pose != last_vs_offset || q.vs_uniform_size != last_vs_size) {
+                SDL_PushGPUVertexUniformData(cmdbuf, 0, &seg.uniform_data[pose], q.vs_uniform_size * sizeof(float));
+                last_vs_offset = pose;
                 last_vs_size = q.vs_uniform_size;
             }
 
@@ -2927,6 +2947,8 @@ void flushSegment(RecompD3dPresenter *presenter)
             SDL_DrawGPUIndexedPrimitives(rpass, q.index_count, 1, 0, q.base_vertex, 0);
         }
         SDL_EndGPURenderPass(rpass);
+    }
+
     }
 
     // Modern water's single-sample depth: the depth-writing draws again, without color.
@@ -3455,6 +3477,13 @@ RecompD3dPresenterError recomp_d3d_presenter_create(
     p->frontbuffer_copy = frontbuffer_copy;
     p->copy_mips = copy_levels > 1u;
     p->dummy_texture = dummy_texture;
+#ifdef RECOMP_IOS_LIFECYCLE
+    auto sendObject = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend);
+    auto sendInt = reinterpret_cast<intptr_t (*)(id, SEL)>(objc_msgSend);
+    id screen = sendObject((id)objc_getClass("UIScreen"), sel_registerName("mainScreen"));
+    p->midEnabled = screen && sendInt(screen, sel_registerName("maximumFramesPerSecond")) >= 120 &&
+        msaa_count == 1 && !SDL_GetHintBoolean("DOA3_DISABLE_SMOOTH_MOTION", false);
+#endif
     p->msaa_count = msaa_count;
     p->msaa_samples = sample_count;
     p->filter_sampler = filter_sampler;
@@ -3553,6 +3582,34 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
 
         SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmdbuf, &color_info, 1, use_depth ? &depth_info : nullptr);
         if (pass) SDL_EndGPURenderPass(pass);
+        if (is_main && presenter->midEnabled) {
+            if (!presenter->midColor || presenter->midWidth != color_w || presenter->midHeight != color_h) {
+                if (presenter->midColor) SDL_ReleaseGPUTexture(presenter->device,presenter->midColor);
+                if (presenter->midDepth) SDL_ReleaseGPUTexture(presenter->device,presenter->midDepth);
+                SDL_GPUTextureCreateInfo spec{};
+                spec.type = SDL_GPU_TEXTURETYPE_2D;
+                spec.width = color_w; spec.height = color_h;
+                spec.layer_count_or_depth = spec.num_levels = 1;
+                spec.format = SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+                spec.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+                presenter->midColor = SDL_CreateGPUTexture(presenter->device,&spec);
+                spec.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT;
+                spec.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+                presenter->midDepth = SDL_CreateGPUTexture(presenter->device,&spec);
+                presenter->midWidth = color_w; presenter->midHeight = color_h;
+                presenter->midReady = false;
+                presenter->previousPose.clear();
+                if (!presenter->midColor || !presenter->midDepth) presenter->midEnabled = false;
+            }
+            if (presenter->midEnabled && (clear.clear_color || presenter->midReady)) {
+                color_info.texture = presenter->midColor;
+                depth_info.texture = presenter->midDepth;
+                if (auto pass = SDL_BeginGPURenderPass(cmdbuf,&color_info,1,use_depth ? &depth_info : nullptr)) {
+                    SDL_EndGPURenderPass(pass);
+                    presenter->midReady = true;
+                }
+            }
+        }
         // Modern water's single-sample depth follows the main depth's clears.
         if (is_main && target_depth == presenter->backbuffer_depth && clear.clear_depth) {
             presenter->water_depth_live = waterDepthWanted(presenter) && ensureWaterTargets(presenter);
@@ -3593,7 +3650,10 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         }
 
         SDL_GPUCommandBuffer *cmdbuf = getCommandBuffer(presenter);
-        SDL_GPUTexture *shown = presenter->backbuffer_resolve;
+        SDL_GPUTexture *shown = nullptr;
+        for (int phase = presenter->midReady && !presenter->previousPose.empty() ? 0 : 1; phase <= 1; ++phase) {
+        SDL_GPUTexture *frame = phase == 0 ? presenter->midColor : presenter->backbuffer_resolve;
+        shown = frame;
         if (presenter->gamma_enabled) {
             SDL_GPUColorTargetInfo gamma_target{};
             gamma_target.texture = presenter->gamma_target;
@@ -3601,7 +3661,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
             gamma_target.store_op = SDL_GPU_STOREOP_STORE;
             if (SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmdbuf, &gamma_target, 1, nullptr)) {
                 SDL_BindGPUGraphicsPipeline(pass, presenter->gamma_pipeline);
-                const SDL_GPUTextureSamplerBinding pixels{presenter->backbuffer_resolve, presenter->point_sampler};
+                const SDL_GPUTextureSamplerBinding pixels{frame, presenter->point_sampler};
                 SDL_BindGPUFragmentSamplers(pass, 0, &pixels, 1);
                 SDL_PushGPUFragmentUniformData(cmdbuf, 0, presenter->gamma_ramp, sizeof presenter->gamma_ramp);
                 SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
@@ -3685,6 +3745,15 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                     swapchain_tex, swap_w, swap_h, &overlay);
             }
         }
+
+        if (phase == 0) {
+            SDL_SubmitGPUCommandBuffer(cmdbuf);
+            presenter->current_command_buffer = nullptr;
+            cmdbuf = getCommandBuffer(presenter);
+        }
+        }
+        presenter->previousPose.swap(presenter->currentPose);
+        presenter->currentPose.clear();
 
         if (presenter->frontbuffer_copy && presenter->frontbuffer_used) {
             SDL_GPUCopyPass *copypass = SDL_BeginGPUCopyPass(cmdbuf);
@@ -3957,6 +4026,30 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                     bottom = std::max(bottom, xy[1]);
                 }
                 const auto scale = widescreen2dScale(presenter, left, right, top, bottom);
+#ifdef RECOMP_IOS_LIFECYCLE
+                // Keep the cell and cursor in place. Only change the horizontal
+                // sample span of the textured face inside a roster-sized quad.
+                float w = (right-left) / presenter->config.width;
+                float h = (bottom-top) / presenter->config.height;
+                if (draw.has_texture && draw.vertex_count <= 6 && draw.vertex_count >= 4 &&
+                    layout.texcoord_offset != RECOMP_D3D_FVF_ABSENT &&
+                    layout.texcoord_offset + sizeof(float) <= draw.vertex_stride &&
+                    h >= .085f && h <= .115f && w >= .065f && w <= .105f &&
+                    top >= .64f * presenter->config.height && bottom <= .90f * presenter->config.height &&
+                    recomp_ios_select_grid()) {
+                    float u[6], lo = INFINITY, hi = -INFINITY;
+                    for (unsigned i=0; i<draw.vertex_count; ++i) {
+                        std::memcpy(&u[i], v_src+i*draw.vertex_stride+layout.texcoord_offset, sizeof(float));
+                        lo = std::min(lo,u[i]); hi = std::max(hi,u[i]);
+                    }
+                    const float center = (lo+hi)*.5f;
+                    for (unsigned i=0; i<draw.vertex_count; ++i) {
+                        const float sample = center + .75f*(u[i]-center);
+                        std::memcpy(vdata.data()+v_offset+i*draw.vertex_stride+layout.texcoord_offset,
+                            &sample,sizeof(sample));
+                    }
+                }
+#endif
                 constants[12] += constants[0] * 0.5f * (1.0f - scale.x) * presenter->config.width;
                 constants[0] *= scale.x;
                 constants[13] += constants[5] * 0.5f * (1.0f - scale.y) * presenter->config.height;
@@ -4106,6 +4199,32 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         }
 
         QueuedDraw q{};
+        if (presenter->midReady && is_main && draw.has_transform && !layout.pretransformed &&
+            !draw.program_count && !draw.blend.blend_enable) {
+            PoseSample pose;
+            pose.vertices = draw.vertex_bytes; pose.texture = draw.texture.data;
+            pose.count = draw.vertex_count; pose.fvf = draw.fvf; pose.first = draw.first_vertex;
+            std::memcpy(pose.matrix, constants, sizeof pose.matrix);
+            const auto slot = presenter->currentPose.size();
+            if (slot < presenter->previousPose.size()) {
+                const auto &prev = presenter->previousPose[slot];
+                if (prev.vertices == pose.vertices && prev.texture == pose.texture && prev.count == pose.count &&
+                    prev.fvf == pose.fvf && prev.first == pose.first &&
+                    std::memcmp(prev.matrix,pose.matrix,sizeof pose.matrix) != 0) {
+                    bool continuous = true;
+                    for (unsigned i=0;i<64;++i)
+                        continuous &= std::isfinite(prev.matrix[i]) && std::isfinite(pose.matrix[i]) &&
+                            std::abs(prev.matrix[i]-pose.matrix[i]) < 0.5f*(1.f+std::abs(pose.matrix[i]));
+                    if (continuous) {
+                        q.midpoint_offset = static_cast<uint32_t>(udata.size());
+                        udata.insert(udata.end(),constants,constants+vs_uniform_size);
+                        for (unsigned i=0;i<64;++i)
+                            udata[q.midpoint_offset+i] = .5f*(prev.matrix[i]+pose.matrix[i]);
+                    }
+                }
+            }
+            presenter->currentPose.push_back(pose);
+        }
         q.pipeline = pipeline;
         q.vertex_offset = v_offset;
         q.vertex_size = v_size;
@@ -4314,6 +4433,8 @@ RecompD3dPresenterError recomp_d3d_presenter_destroy(
     if (p->dummy_texture) SDL_ReleaseGPUTexture(p->device, p->dummy_texture);
     if (p->water_color) SDL_ReleaseGPUTexture(p->device, p->water_color);
     if (p->water_depth) SDL_ReleaseGPUTexture(p->device, p->water_depth);
+    if (p->midColor) SDL_ReleaseGPUTexture(p->device,p->midColor);
+    if (p->midDepth) SDL_ReleaseGPUTexture(p->device,p->midDepth);
     if (p->backbuffer_color) SDL_ReleaseGPUTexture(p->device, p->backbuffer_color);
     if (p->backbuffer_depth) SDL_ReleaseGPUTexture(p->device, p->backbuffer_depth);
     if (p->backbuffer_resolve && p->backbuffer_resolve != p->backbuffer_color) SDL_ReleaseGPUTexture(p->device, p->backbuffer_resolve);

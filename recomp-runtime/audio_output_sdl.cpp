@@ -37,6 +37,17 @@ struct SdlVoice {
 std::mutex audio_mutex;
 SDL_AudioDeviceID audio_device;
 SdlVoice voices[kVoiceCount];
+SDL_AudioStream *released[kVoiceCount]{};
+void reapReleased(bool all)
+{
+    for (auto &stream : released) {
+        if (stream && (all || SDL_GetAudioStreamAvailable(stream) <= 0)) {
+            SDL_DestroyAudioStream(stream);
+            stream = nullptr;
+        }
+    }
+}
+
 bool reported_nonzero[kVoiceCount];
 bool attempted, summary_printed;
 std::vector<uint8_t> silence_buffer;
@@ -180,6 +191,7 @@ extern "C" void recomp_audio_output_shutdown(void)
 {
     std::lock_guard<std::mutex> lock(audio_mutex);
     if (summary_printed) return;
+    reapReleased(true);
     for (auto &voice : voices) destroyVoice(voice);
     if (audio_device != 0) {
         SDL_CloseAudioDevice(audio_device);
@@ -205,6 +217,22 @@ extern "C" void recomp_audio_output_test_reset(void)
     std::lock_guard<std::mutex> lock(audio_mutex);
     attempted = false;
     summary_printed = false;
+}
+
+extern "C" void recomp_audio_output_finish_voice(uint32_t slot)
+{
+    std::lock_guard<std::mutex> lock(audio_mutex);
+    if (slot >= kVoiceCount || !voices[slot].stream) return;
+    reapReleased(false);
+    SDL_FlushAudioStream(voices[slot].stream);
+    for (auto &stream : released) {
+        if (!stream) {
+            stream = voices[slot].stream;
+            voices[slot] = {};
+            return;
+        }
+    }
+    destroyVoice(voices[slot]);
 }
 
 extern "C" void recomp_audio_output_reset_voice(uint32_t slot)

@@ -338,7 +338,14 @@ static void buffer_call(uint32_t operation, uint32_t argument_count)
         original_buffer_call(operation);
         if (clock != NULL && recomp_runtime.registers.eax == 0u) {
             LOCK_CLOCKS();
+
+#if defined(__APPLE__) && defined(RECOMP_FULL_PROGRAM)
+            extern void recomp_audio_output_finish_voice(uint32_t);
+            recomp_audio_output_finish_voice((uint32_t)(clock - buffer_clocks));
+            *clock = (BufferClock){0};
+#else
             retire_buffer(clock);
+#endif
             UNLOCK_CLOCKS();
         }
         return;

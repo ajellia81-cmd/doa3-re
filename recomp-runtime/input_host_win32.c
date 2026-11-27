@@ -286,6 +286,12 @@ static void update_pads(void)
         if (!open && free_port < RECOMP_INPUT_PORT_COUNT) {
             pads[free_port] = SDL_OpenGamepad(ids[i]);
             if (pads[free_port] != NULL) {
+#if defined(TARGET_OS_IOS) && TARGET_OS_IOS
+                if (SDL_GetBooleanProperty(SDL_GetGamepadProperties(pads[free_port]),
+                        SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false)) {
+                    SDL_RumbleGamepad(pads[free_port], 1, 1, 1);
+                }
+#endif
                 fprintf(stderr, "recomp input: gamepad '%s' on port=%u\n",
                     SDL_GetGamepadName(pads[free_port]), (unsigned)free_port);
             }

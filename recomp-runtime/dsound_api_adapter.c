@@ -842,7 +842,13 @@ static void create_sound_buffer(void)
 static void buffer_release(void)
 {
     Buffer *buffer = buffer_at(kernel_arg(1u));
-    recomp_audio_output_reset_voice((uint32_t)(buffer - buffers));
+
+#if defined(__APPLE__) && defined(RECOMP_FULL_PROGRAM)
+            extern void recomp_audio_output_finish_voice(uint32_t);
+            recomp_audio_output_finish_voice((uint32_t)(buffer - buffers));
+#else
+            recomp_audio_output_reset_voice((uint32_t)(buffer - buffers));
+#endif
     if (buffer->owned_data) recomp_kernel_free_pool(buffer->owned_data);
     buffer->owned_data = 0u;
     buffer->pcm = NULL; /* host output reads only the storage it was given */
