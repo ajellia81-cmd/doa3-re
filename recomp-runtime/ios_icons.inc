@@ -6,6 +6,43 @@ using IconPixels=std::array<uint32_t,iconSide*iconSide>;
 struct GuideIcons { std::array<IconPixels,8> pixels{}; std::array<float,8> aspect{}; };
 GuideIcons guideIcons;
 bool haveIcons;
+// The menu capture has already been composited over a charcoal panel.
+void maskIconBackground(IconPixels &icon) {
+    std::array<int, 4> corners{};
+    for (int i = 0; i < 4; ++i) {
+        const int x = (i & 1) ? iconSide - 1 : 0;
+        const int y = (i & 2) ? iconSide - 1 : 0;
+        corners[i] = int(icon[y * iconSide + x] & 255);
+    }
+    std::sort(corners.begin(), corners.end());
+    const int background = (corners[1] + corners[2]) / 2;
+    std::array<int, iconSide * iconSide> queue{};
+    std::array<bool, iconSide * iconSide> visited{};
+    int head = 0, tail = 0;
+    auto visit = [&](int index) {
+        if (visited[index]) return;
+        visited[index] = true;
+        const auto color = icon[index];
+        int distance = 0;
+        for (int shift : {0, 8, 16})
+            distance = std::max(distance, std::abs(int((color >> shift) & 255) - background));
+        if (distance > 20) return;
+        const int alpha = std::clamp((distance - 7) * 255 / 13, 0, 255);
+        icon[index] = (color & 0xffffffu) | (uint32_t(alpha) << 24);
+        if (distance <= 14) queue[tail++] = index;
+    };
+    for (int i = 0; i < iconSide; ++i) {
+        visit(i); visit((iconSide - 1) * iconSide + i);
+        visit(i * iconSide); visit(i * iconSide + iconSide - 1);
+    }
+    while (head < tail) {
+        const int index = queue[head++];
+        if (index % iconSide) visit(index - 1);
+        if (index % iconSide < iconSide - 1) visit(index + 1);
+        if (index >= iconSide) visit(index - iconSide);
+        if (index + iconSide < iconSide * iconSide) visit(index + iconSide);
+    }
+}
 void loadIcons() {
     static bool tried;
     if (tried) return;
@@ -17,6 +54,7 @@ void loadIcons() {
     if (!in.read(reinterpret_cast<char*>(&saved),sizeof saved)) return;
     for(float a:saved.aspect) if (!(a>=.4f && a<=2.1f)) return;
     guideIcons=saved;
+    for (auto &icon : guideIcons.pixels) maskIconBackground(icon);
     haveIcons=true;
 }
 void drawIcon(ImDrawList *draw,int index,ImVec2 origin,float height) {
@@ -89,13 +127,15 @@ void recomp_ios_read_button_strip(const uint8_t *bgra, unsigned width, unsigned 
             }
         }
     }
+    GuideIcons raw = guideIcons;
+    for (auto &icon : guideIcons.pixels) maskIconBackground(icon);
     haveIcons=true;
     std::fprintf(stderr,"[guide] loaded Xbox button art from Button Config\n");
     const auto path=settingsFile();
     if (path.empty()) return;
     const auto temp=path+".icons.tmp";
     std::ofstream out(temp,std::ios::binary);
-    out.write(reinterpret_cast<const char*>(&guideIcons),sizeof guideIcons);
+    out.write(reinterpret_cast<const char*>(&raw),sizeof raw);
     out.close();
     if (out) std::rename(temp.c_str(),(path+".button-icons-v5").c_str());
 }

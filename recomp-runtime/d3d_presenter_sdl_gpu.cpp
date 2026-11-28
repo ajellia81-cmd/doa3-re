@@ -2473,16 +2473,17 @@ void precompileBootShaders(RecompD3dPresenter *p)
 constexpr char kGammaMsl[] = R"(#include <metal_stdlib>
 using namespace metal;
 struct GammaRamp { float4 ramp[256]; };
-struct GammaOut { float4 position [[position]]; };
+struct GammaOut { float4 position [[position]]; float2 uv; };
 vertex GammaOut gamma_vs(uint id [[vertex_id]]) {
     float2 p = float2(float((id << 1u) & 2u), float(id & 2u));
     GammaOut out;
+    out.uv = p;
     out.position = float4(p * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
     return out;
 }
 fragment float4 gamma_ps(GammaOut in [[stage_in]], texture2d<float> pixels [[texture(0)]],
                          sampler pixel_sampler [[sampler(0)]], constant GammaRamp &g [[buffer(0)]]) {
-    float4 c = pixels.read(uint2(in.position.xy));
+    float4 c = pixels.sample(pixel_sampler, in.uv);
     uint3 i = uint3(saturate(c.rgb) * 255.0 + 0.5);
     return float4(g.ramp[i.r].r, g.ramp[i.g].g, g.ramp[i.b].b, c.a);
 }
