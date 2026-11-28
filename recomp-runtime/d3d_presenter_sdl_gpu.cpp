@@ -4210,7 +4210,26 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
                 // A frontend sprite is already laid out in guest screen
                 // coordinates. Apply the canvas transform exactly once,
                 // regardless of its position, texture or primitive count.
-                const bool screenImage = !draw.texture_is_backbuffer &&
+                // A scene-sized transition quad already matches the output canvas.
+                // Continue fades can sample a copied framebuffer through a regular texture.
+                bool coversCanvas = false;
+                if (draw.has_texture && draw.blend.blend_enable &&
+                    draw.vertex_count >= 3 && draw.vertex_count <= 6) {
+                    float left = guest_w, right = 0.0f;
+                    float top = guest_h, bottom = 0.0f;
+                    for (uint32_t i = 0; i < draw.vertex_count; ++i) {
+                        float xy[2];
+                        std::memcpy(xy, static_cast<const uint8_t *>(draw.vertex_bytes) +
+                            i * draw.vertex_stride, sizeof xy);
+                        left = std::min(left, xy[0]);
+                        right = std::max(right, xy[0]);
+                        top = std::min(top, xy[1]);
+                        bottom = std::max(bottom, xy[1]);
+                    }
+                    coversCanvas = left <= guest_w * 0.04f && right >= guest_w * 0.96f &&
+                        top <= guest_h * 0.04f && bottom >= guest_h * 0.96f;
+                }
+                const bool screenImage = !coversCanvas && !draw.texture_is_backbuffer &&
                     !draw.texture_is_front_buffer && !draw.four_tap_filter &&
                     (recomp_ios_frontend_frame() || draw.has_texture);
                 const auto scale = RecompWidescreen2dScale{
