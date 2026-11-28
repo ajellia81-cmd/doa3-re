@@ -30,7 +30,7 @@ void maskIconBackground(IconPixels &icon) {
         if (distance > 20) return;
         const int alpha = std::clamp((distance - 7) * 255 / 13, 0, 255);
         icon[index] = (color & 0xffffffu) | (uint32_t(alpha) << 24);
-        if (distance <= 14) queue[tail++] = index;
+        if (distance <= 9) queue[tail++] = index;
     };
     for (int i = 0; i < iconSide; ++i) {
         visit(i); visit((iconSide - 1) * iconSide + i);
@@ -50,9 +50,10 @@ void loadIcons() {
     tried=true;
     const auto path=settingsFile();
     if (path.empty()) return;
-    std::ifstream in(path+".button-icons-v6",std::ios::binary);
+    std::ifstream in(path+".button-icons-v7",std::ios::binary);
     const bool wideCache = in.is_open();
-    if (!wideCache) in.open(path+".button-icons-v5",std::ios::binary);
+    if (!wideCache) in.open(path+".button-icons-v6",std::ios::binary);
+    if (!in) in.open(path+".button-icons-v5",std::ios::binary);
     GuideIcons saved;
     if (!in.read(reinterpret_cast<char*>(&saved),sizeof saved)) return;
     for(float a:saved.aspect) if (!(a>=.4f && a<=2.1f)) return;
@@ -85,7 +86,7 @@ void recomp_ios_read_button_strip(const uint8_t *bgra, unsigned width, unsigned 
 {
     if (!wantsWideCapture || !bgra || width<16 || height<16) return;
     const unsigned radius = std::max(1u,frameHeight/65);
-    const unsigned halfHeight = std::max(1u,frameHeight/46);
+    const unsigned halfHeight = std::max(1u,frameHeight/36);
     const auto pixel = [=](unsigned x,unsigned y) { return bgra+4*(y*stride+x); };
     int yOffset=0, bestOffset=0;
     const auto rowY = [&](unsigned row) {
@@ -117,7 +118,7 @@ void recomp_ios_read_button_strip(const uint8_t *bgra, unsigned width, unsigned 
     }
     }
     yOffset=bestOffset;
-    const unsigned halfWidth = (halfHeight * 3 + 1) / 2;
+    const unsigned halfWidth = (halfHeight * 5 + 2) / 4;
     if (!bestScore || centerX<halfWidth || centerX+halfWidth>=width) return;
     for (unsigned row=0; row<8; ++row) {
         guideIcons.aspect[row]=float(halfWidth)/float(halfHeight);
@@ -142,5 +143,5 @@ void recomp_ios_read_button_strip(const uint8_t *bgra, unsigned width, unsigned 
     std::ofstream out(temp,std::ios::binary);
     out.write(reinterpret_cast<const char*>(&raw),sizeof raw);
     out.close();
-    if (out) std::rename(temp.c_str(),(path+".button-icons-v6").c_str());
+    if (out) std::rename(temp.c_str(),(path+".button-icons-v7").c_str());
 }

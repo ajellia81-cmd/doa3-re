@@ -3621,7 +3621,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
 
         SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmdbuf, &color_info, 1, use_depth ? &depth_info : nullptr);
         if (pass) SDL_EndGPURenderPass(pass);
-        if (is_main && presenter->midEnabled) {
+        if (is_main && presenter->midEnabled && !waterDepthWanted(presenter)) {
             const uint32_t midWidth = std::max(1u,color_w / 2);
             const uint32_t midHeight = std::max(1u,color_h / 2);
             if (!presenter->midColor || presenter->midWidth != midWidth || presenter->midHeight != midHeight) {
@@ -3705,12 +3705,12 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         }
 #endif
         const Uint64 presentStart = SDL_GetTicksNS();
-        constexpr Uint64 slowGuestFrame = 21000000;
+        constexpr Uint64 slowGuestFrame = 20000000;
         constexpr Uint64 retryDelay = 500000000;
         if (presenter->submittedMidpoint && presenter->lastGuestPresent &&
             presentStart - presenter->lastGuestPresent > slowGuestFrame &&
             presentStart >= presenter->skipMidpointsUntil) {
-            if (++presenter->lateSmoothFrames >= 3) {
+            if (++presenter->lateSmoothFrames >= 2) {
                 presenter->skipMidpointsUntil = presentStart + retryDelay;
                 presenter->lateSmoothFrames = 0;
             }
@@ -3724,7 +3724,7 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         SDL_GPUCommandBuffer *cmdbuf = getCommandBuffer(presenter);
         SDL_GPUTexture *shown = nullptr;
         for (int phase = presenter->midReady && !presenter->previousPose.empty() &&
-            presentStart >= presenter->skipMidpointsUntil ? 0 : 1; phase <= 1; ++phase) {
+            !waterDepthWanted(presenter) && presentStart >= presenter->skipMidpointsUntil ? 0 : 1; phase <= 1; ++phase) {
         SDL_GPUTexture *frame = phase == 0 ? presenter->midColor : presenter->backbuffer_resolve;
         shown = frame;
         if (presenter->gamma_enabled) {
@@ -4021,7 +4021,12 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         const bool water = draw.water.enabled && !layout.pretransformed && !draw.program_count;
         const bool water_scene = water && presenter->water_depth_live &&
             target_color == presenter->backbuffer_color && target_depth == presenter->backbuffer_depth;
-        if (water) presenter->water_present = presenter->present_count;
+        if (water) {
+            presenter->water_present = presenter->present_count;
+            // The water shader samples the real frame's pre-water color and depth.
+            // It cannot reproduce that reflection against the interpolated geometry.
+            presenter->midReady = false;
+        }
         if (water_scene && (presenter->segment.water_depth_pending ||
                 presenter->water_copy_present != presenter->present_count)) {
             flushSegment(presenter);
