@@ -463,6 +463,12 @@ struct RecompD3dPresenter {
     SDL_GPUTexture *midColor = nullptr, *midDepth = nullptr;
     bool midCapable = false, midEnabled = false, midReady = false;
     bool submittedMidpoint = false;
+#ifdef RECOMP_IOS_LIFECYCLE
+    Uint64 nextSmoothDiagnostic = 0;
+    unsigned smoothDraws = 0, smoothBlends = 0, smoothMidpoints = 0;
+    unsigned smoothLateFrames = 0, smoothFrames = 0;
+    double smoothMaxFrameMs = 0, smoothMaxAcquireMs = 0;
+#endif
     unsigned lateSmoothFrames = 0;
     bool guideClockPaused = false;
 #ifdef RECOMP_IOS_LIFECYCLE
@@ -3705,6 +3711,34 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         }
 #endif
         const Uint64 presentStart = SDL_GetTicksNS();
+#ifdef RECOMP_IOS_LIFECYCLE
+        if (presenter->midEnabled || presentStart < presenter->skipMidpointsUntil ||
+            presenter->smoothFrames) {
+            if (presenter->lastGuestPresent) {
+                const double frameMs = (presentStart - presenter->lastGuestPresent) / 1e6;
+                presenter->smoothMaxFrameMs = std::max(presenter->smoothMaxFrameMs, frameMs);
+                presenter->smoothLateFrames += frameMs > 20.0;
+            }
+            ++presenter->smoothFrames;
+            if (presentStart >= presenter->nextSmoothDiagnostic) {
+                presenter->nextSmoothDiagnostic = presentStart + 1000000000;
+                if (const char *home = std::getenv("HOME")) {
+                    const auto path = std::string(home) + "/Documents/DOA3-smooth-motion.log";
+                    if (auto *log = std::fopen(path.c_str(), "a")) {
+                        std::fprintf(log, "t=%.3f frames=%u midpoint=%u late=%u max_frame_ms=%.2f max_acquire_ms=%.2f draws=%u blended=%u water=%d cooldown=%d\n",
+                            presentStart / 1e9, presenter->smoothFrames, presenter->smoothMidpoints,
+                            presenter->smoothLateFrames, presenter->smoothMaxFrameMs,
+                            presenter->smoothMaxAcquireMs, presenter->smoothDraws, presenter->smoothBlends,
+                            int(waterDepthWanted(presenter)), int(presentStart < presenter->skipMidpointsUntil));
+                        std::fclose(log);
+                    }
+                }
+                presenter->smoothFrames = presenter->smoothMidpoints = presenter->smoothLateFrames = 0;
+                presenter->smoothDraws = presenter->smoothBlends = 0;
+                presenter->smoothMaxFrameMs = presenter->smoothMaxAcquireMs = 0;
+            }
+        }
+#endif
         constexpr Uint64 slowGuestFrame = 20000000;
         constexpr Uint64 retryDelay = 500000000;
         if (presenter->submittedMidpoint && presenter->lastGuestPresent &&
@@ -3746,7 +3780,18 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         Uint32 swap_w = 0, swap_h = 0;
         const auto acquire = phase == 0 ? SDL_AcquireGPUSwapchainTexture :
                                           SDL_WaitAndAcquireGPUSwapchainTexture;
-        if (acquire(cmdbuf, presenter->window, &swapchain_tex, &swap_w, &swap_h)) {
+#ifdef RECOMP_IOS_LIFECYCLE
+        const Uint64 acquireStart = SDL_GetTicksNS();
+#endif
+        const bool acquired = acquire(cmdbuf, presenter->window, &swapchain_tex, &swap_w, &swap_h);
+#ifdef RECOMP_IOS_LIFECYCLE
+        if (presenter->midEnabled || presentStart < presenter->skipMidpointsUntil) {
+            presenter->smoothMaxAcquireMs = std::max(presenter->smoothMaxAcquireMs,
+                (SDL_GetTicksNS() - acquireStart) / 1e6);
+            presenter->smoothMidpoints += acquired && swapchain_tex && phase == 0;
+        }
+#endif
+        if (acquired) {
             if (swapchain_tex && swap_w > 0 && swap_h > 0) {
                 SDL_GPUBlitInfo blit{};
                 blit.destination.texture = swapchain_tex;
@@ -4340,6 +4385,12 @@ RecompD3dPresenterError recomp_d3d_presenter_submit(
         }
 
         QueuedDraw q{};
+#ifdef RECOMP_IOS_LIFECYCLE
+        if (presenter->midEnabled && is_main) {
+            ++presenter->smoothDraws;
+            presenter->smoothBlends += draw.blend.blend_enable;
+        }
+#endif
         if (presenter->midReady && is_main && draw.has_transform && !layout.pretransformed &&
             !draw.program_count && !draw.blend.blend_enable) {
             PoseSample pose;
