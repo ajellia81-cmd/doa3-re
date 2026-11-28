@@ -6,6 +6,7 @@ using IconPixels=std::array<uint32_t,iconSide*iconSide>;
 struct GuideIcons { std::array<IconPixels,8> pixels{}; std::array<float,8> aspect{}; };
 GuideIcons guideIcons;
 bool haveIcons;
+bool wantsWideCapture = true;
 // The menu capture has already been composited over a charcoal panel.
 void maskIconBackground(IconPixels &icon) {
     std::array<int, 4> corners{};
@@ -49,11 +50,14 @@ void loadIcons() {
     tried=true;
     const auto path=settingsFile();
     if (path.empty()) return;
-    std::ifstream in(path+".button-icons-v5",std::ios::binary);
+    std::ifstream in(path+".button-icons-v6",std::ios::binary);
+    const bool wideCache = in.is_open();
+    if (!wideCache) in.open(path+".button-icons-v5",std::ios::binary);
     GuideIcons saved;
     if (!in.read(reinterpret_cast<char*>(&saved),sizeof saved)) return;
     for(float a:saved.aspect) if (!(a>=.4f && a<=2.1f)) return;
     guideIcons=saved;
+    wantsWideCapture = !wideCache;
     for (auto &icon : guideIcons.pixels) maskIconBackground(icon);
     haveIcons=true;
 }
@@ -73,13 +77,13 @@ void drawIcon(ImDrawList *draw,int index,ImVec2 origin,float height) {
 bool recomp_ios_wants_icons()
 {
     loadIcons();
-    return !haveIcons;
+    return wantsWideCapture;
 }
 // Validate four aligned face buttons before adopting any image from a frame.
 void recomp_ios_read_button_strip(const uint8_t *bgra, unsigned width, unsigned height,
     unsigned stride, unsigned top, unsigned frameHeight)
 {
-    if (haveIcons || !bgra || width<16 || height<16) return;
+    if (!wantsWideCapture || !bgra || width<16 || height<16) return;
     const unsigned radius = std::max(1u,frameHeight/65);
     const unsigned halfHeight = std::max(1u,frameHeight/46);
     const auto pixel = [=](unsigned x,unsigned y) { return bgra+4*(y*stride+x); };
@@ -113,10 +117,10 @@ void recomp_ios_read_button_strip(const uint8_t *bgra, unsigned width, unsigned 
     }
     }
     yOffset=bestOffset;
-    const unsigned halfWidth = halfHeight;
+    const unsigned halfWidth = (halfHeight * 3 + 1) / 2;
     if (!bestScore || centerX<halfWidth || centerX+halfWidth>=width) return;
     for (unsigned row=0; row<8; ++row) {
-        guideIcons.aspect[row]=1.0f;
+        guideIcons.aspect[row]=float(halfWidth)/float(halfHeight);
         auto &icon = guideIcons.pixels[row];
         for (int y=0; y<iconSide; ++y) {
             for (int x=0; x<iconSide; ++x) {
@@ -127,6 +131,7 @@ void recomp_ios_read_button_strip(const uint8_t *bgra, unsigned width, unsigned 
             }
         }
     }
+    wantsWideCapture = false;
     GuideIcons raw = guideIcons;
     for (auto &icon : guideIcons.pixels) maskIconBackground(icon);
     haveIcons=true;
@@ -137,5 +142,5 @@ void recomp_ios_read_button_strip(const uint8_t *bgra, unsigned width, unsigned 
     std::ofstream out(temp,std::ios::binary);
     out.write(reinterpret_cast<const char*>(&raw),sizeof raw);
     out.close();
-    if (out) std::rename(temp.c_str(),(path+".button-icons-v5").c_str());
+    if (out) std::rename(temp.c_str(),(path+".button-icons-v6").c_str());
 }
